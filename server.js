@@ -4,6 +4,15 @@ const path = require('path');
 const cron = require('node-cron');
 
 const app = express();
+const cors = require('cors');
+
+// Настройка CORS для вашего сайта
+const corsOptions = {
+  origin: 'https://price-hunter-bel.vercel.app',
+  optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
 const PORT = process.env.PORT || 3000;
 
 // --- Настройка middleware ---
