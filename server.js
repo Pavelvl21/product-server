@@ -110,10 +110,31 @@ function validateProductCode(code) {
   return /^\d{1,12}$/.test(code);
 }
 
-// --- Middleware для проверки JWT ---
-const authenticateToken = (req, res, next) => {
+// --- Middleware для смешанной аутентификации ---
+const authenticateWithBypass = (req, res, next) => {
+  // Получаем origin запроса
+  const origin = req.headers.origin || req.headers.referer || '';
+  
+  // Список доверенных доменов, которые могут работать без токена
+  const trustedDomains = [
+    'https://patio-minsk.by',
+    'http://patio-minsk.by', // если есть HTTP версия
+    'https://www.patio-minsk.by', // если есть с www
+    'http://www.patio-minsk.by'
+  ];
+  
+  // Проверяем, идёт ли запрос с доверенного домена
+  const isTrustedDomain = trustedDomains.some(domain => origin.startsWith(domain));
+  
+  // Если это доверенный домен — пропускаем без проверки
+  if (isTrustedDomain) {
+    console.log(`✅ Доступ с доверенного домена: ${origin}`);
+    return next();
+  }
+  
+  // Если нет — проверяем JWT токен как обычно
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({ error: 'Требуется авторизация' });
@@ -212,7 +233,7 @@ app.post('/api/users', async (req, res) => {
 // ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ (ТРЕБУЮТ JWT) ====================
 
 // --- API: ПОЛУЧИТЬ ВСЕ КОДЫ ---
-app.get('/api/codes', authenticateToken, async (req, res) => {
+app.get('/api/codes', , async (req, res) => {
   try {
     const result = await db.execute('SELECT code FROM product_codes ORDER BY created_at DESC');
     res.json(result.rows.map(row => row.code));
@@ -223,7 +244,7 @@ app.get('/api/codes', authenticateToken, async (req, res) => {
 });
 
 // --- API: ДОБАВИТЬ КОД ---
-app.post('/api/codes', authenticateToken, async (req, res) => {
+app.post('/api/codes', , async (req, res) => {
   const { code } = req.body;
 
   if (!validateProductCode(code)) {
@@ -261,7 +282,7 @@ app.post('/api/codes', authenticateToken, async (req, res) => {
 });
 
 // --- API: МАССОВОЕ ДОБАВЛЕНИЕ КОДОВ ---
-app.post('/api/codes/bulk', authenticateToken, async (req, res) => {
+app.post('/api/codes/bulk', , async (req, res) => {
   const { codes } = req.body;
 
   if (!Array.isArray(codes) || codes.length === 0) {
@@ -316,7 +337,7 @@ app.post('/api/codes/bulk', authenticateToken, async (req, res) => {
 });
 
 // --- API: УДАЛИТЬ КОД ---
-app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
+app.delete('/api/codes/:code', , async (req, res) => {
   const code = req.params.code;
 
   try {
@@ -341,7 +362,7 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
 });
 
 // --- API: ПОЛУЧИТЬ ДАННЫЕ ДЛЯ ТАБЛИЦЫ ---
-app.get('/api/products', authenticateToken, async (req, res) => {
+app.get('/api/products', , async (req, res) => {
   try {
     const datesResult = await db.execute(`
       SELECT DISTINCT DATE(updated_at) as update_date
@@ -393,7 +414,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
 });
 
 // --- API: СТАТИСТИКА ---
-app.get('/api/stats', authenticateToken, async (req, res) => {
+app.get('/api/stats', , async (req, res) => {
   try {
     const productCount = await db.execute('SELECT COUNT(*) as count FROM product_codes');
     const recordCount = await db.execute('SELECT COUNT(*) as count FROM price_history');
