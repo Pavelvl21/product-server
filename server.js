@@ -1,40 +1,43 @@
-// server.js - Полностью переписан под Turso (работает из коробки!)
+// server.js - Полный код с аутентификацией и пакетной отправкой
 import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
 import cron from 'node-cron';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-// --- РАЗРЕШЕНИЕ CORS ДЛЯ ВАШЕГО САЙТА ---
+const PORT = process.env.PORT || 3000;
+
+// --- РАЗРЕШЕНИЕ CORS ---
 app.use((req, res, next) => {
-  // Разрешаем запросы только с вашего домена на Vercel
   res.header('Access-Control-Allow-Origin', 'https://price-hunter-bel.vercel.app');
-  // Разрешаем нужные методы
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  // Разрешаем нужные заголовки (включая ваш секретный ключ)
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-secret-key');
-  
-  // Если это предварительный OPTIONS-запрос (preflight), отвечаем успешно
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-secret-key, Authorization');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
-  
   next();
 });
-const PORT = process.env.PORT || 3000;
 
 // --- Настройка middleware ---
 app.use(express.json());
 app.use(express.static('public'));
 
-// --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ (их добавим позже на Koyeb) ---
+// --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 const TURSO_URL = process.env.TURSO_URL;
 const TURSO_TOKEN = process.env.TURSO_TOKEN;
-const MY_SECRET_KEY = process.env.SECRET_KEY;
+const MY_SECRET_KEY = process.env.SECRET_KEY; // Для создания пользователей
+const JWT_SECRET = process.env.JWT_SECRET; // Для JWT токенов
+
+if (!JWT_SECRET) {
+  console.error('❌ FATAL: JWT_SECRET не задан в переменных окружения!');
+  process.exit(1);
+}
 
 // --- Подключение к Turso ---
 let db;
@@ -49,22 +52,20 @@ try {
   process.exit(1);
 }
 
-// --- Проверка подключения ---
-async function testConnection() {
-  try {
-    await db.execute('SELECT 1');
-    console.log('✅ Подключено к Turso');
-    
-    // Создаем таблицы при первом запуске (на всякий случай)
-    await initTables();
-  } catch (err) {
-    console.error('❌ Ошибка подключения к Turso:', err.message);
-  }
-}
-
-// --- Инициализация таблиц (если вдруг не создали вручную) ---
+// --- Инициализация таблиц ---
 async function initTables() {
   try {
+    // Таблица пользователей (НОВАЯ)
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Таблица кодов товаров
     await db.execute(`
       CREATE TABLE IF NOT EXISTS product_codes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +74,7 @@ async function initTables() {
       )
     `);
     
+    // Таблица истории цен
     await db.execute(`
       CREATE TABLE IF NOT EXISTS price_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +85,7 @@ async function initTables() {
       )
     `);
     
+    // Таблица информации о товарах
     await db.execute(`
       CREATE TABLE IF NOT EXISTS products_info (
         code TEXT PRIMARY KEY,
@@ -95,21 +98,121 @@ async function initTables() {
       )
     `);
     
-    console.log('✅ Таблицы инициализированы');
+    console.log('✅ Все таблицы инициализированы');
   } catch (err) {
     console.error('❌ Ошибка инициализации таблиц:', err);
   }
 }
-
-testConnection();
+initTables();
 
 // --- ВАЛИДАЦИЯ КОДА ---
 function validateProductCode(code) {
   return /^\d{1,12}$/.test(code);
 }
 
+// --- Middleware для проверки JWT ---
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+  if (!token) {
+    return res.status(401).json({ error: 'Требуется авторизация' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Недействительный токен' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// ==================== ЭНДПОИНТЫ БЕЗ АВТОРИЗАЦИИ ====================
+
+// --- Корневой маршрут (главная страница) ---
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// --- Вход в систему (НЕ ТРЕБУЕТ АВТОРИЗАЦИИ) ---
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Необходимо указать имя пользователя и пароль' });
+  }
+
+  try {
+    const result = await db.execute({
+      sql: 'SELECT id, username, password_hash FROM users WHERE username = ?',
+      args: [username]
+    });
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Неверное имя пользователя или пароль' });
+    }
+
+    const user = result.rows[0];
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Неверное имя пользователя или пароль' });
+    }
+
+    // Создаем JWT токен (живет 7 дней)
+    const token = jwt.sign(
+      { id: user.id, username: user.username },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({ message: 'Вход выполнен успешно', token });
+
+  } catch (err) {
+    console.error('Ошибка при входе:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// --- Создание нового пользователя (ТОЛЬКО ПО СЕКРЕТНОМУ КЛЮЧУ) ---
+app.post('/api/users', async (req, res) => {
+  const userKey = req.headers['x-secret-key'];
+  if (!userKey || userKey !== MY_SECRET_KEY) {
+    return res.status(403).json({ error: 'Доступ запрещен' });
+  }
+
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Необходимо указать имя пользователя и пароль' });
+  }
+
+  try {
+    // Хешируем пароль
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+
+    await db.execute({
+      sql: 'INSERT INTO users (username, password_hash) VALUES (?, ?)',
+      args: [username, passwordHash]
+    });
+
+    res.status(201).json({ message: 'Пользователь успешно создан' });
+
+  } catch (err) {
+    if (err.message.includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ error: 'Пользователь с таким именем уже существует' });
+    }
+    console.error('Ошибка при создании пользователя:', err);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ (ТРЕБУЮТ JWT) ====================
+
 // --- API: ПОЛУЧИТЬ ВСЕ КОДЫ ---
-app.get('/api/codes', async (req, res) => {
+app.get('/api/codes', authenticateToken, async (req, res) => {
   try {
     const result = await db.execute('SELECT code FROM product_codes ORDER BY created_at DESC');
     res.json(result.rows.map(row => row.code));
@@ -120,12 +223,7 @@ app.get('/api/codes', async (req, res) => {
 });
 
 // --- API: ДОБАВИТЬ КОД ---
-app.post('/api/codes', async (req, res) => {
-  const userKey = req.headers['x-secret-key'];
-  if (!userKey || userKey !== MY_SECRET_KEY) {
-    return res.status(403).json({ error: 'Доступ запрещен' });
-  }
-
+app.post('/api/codes', authenticateToken, async (req, res) => {
   const { code } = req.body;
 
   if (!validateProductCode(code)) {
@@ -161,13 +259,9 @@ app.post('/api/codes', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// --- API: МАССОВОЕ ДОБАВЛЕНИЕ КОДОВ (только с ключом) ---
-app.post('/api/codes/bulk', async (req, res) => {
-  const userKey = req.headers['x-secret-key'];
-  if (!userKey || userKey !== MY_SECRET_KEY) {
-    return res.status(403).json({ error: 'Доступ запрещен' });
-  }
 
+// --- API: МАССОВОЕ ДОБАВЛЕНИЕ КОДОВ ---
+app.post('/api/codes/bulk', authenticateToken, async (req, res) => {
   const { codes } = req.body;
 
   if (!Array.isArray(codes) || codes.length === 0) {
@@ -181,13 +275,11 @@ app.post('/api/codes/bulk', async (req, res) => {
 
   for (const code of codes) {
     try {
-      // Проверяем валидность
       if (!validateProductCode(code)) {
         results.failed.push({ code, reason: 'неверный формат' });
         continue;
       }
 
-      // Проверяем лимит
       const countResult = await db.execute({
         sql: 'SELECT COUNT(*) as count FROM product_codes',
         args: []
@@ -198,7 +290,6 @@ app.post('/api/codes/bulk', async (req, res) => {
         continue;
       }
 
-      // Добавляем код
       const insertResult = await db.execute({
         sql: 'INSERT INTO product_codes (code) VALUES (?) ON CONFLICT(code) DO NOTHING RETURNING code',
         args: [code]
@@ -223,13 +314,9 @@ app.post('/api/codes/bulk', async (req, res) => {
     results
   });
 });
-// --- API: УДАЛИТЬ КОД ---
-app.delete('/api/codes/:code', async (req, res) => {
-  const userKey = req.headers['x-secret-key'];
-  if (!userKey || userKey !== MY_SECRET_KEY) {
-    return res.status(403).json({ error: 'Доступ запрещен' });
-  }
 
+// --- API: УДАЛИТЬ КОД ---
+app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   const code = req.params.code;
 
   try {
@@ -254,7 +341,7 @@ app.delete('/api/codes/:code', async (req, res) => {
 });
 
 // --- API: ПОЛУЧИТЬ ДАННЫЕ ДЛЯ ТАБЛИЦЫ ---
-app.get('/api/products', async (req, res) => {
+app.get('/api/products', authenticateToken, async (req, res) => {
   try {
     const datesResult = await db.execute(`
       SELECT DISTINCT DATE(updated_at) as update_date
@@ -306,7 +393,7 @@ app.get('/api/products', async (req, res) => {
 });
 
 // --- API: СТАТИСТИКА ---
-app.get('/api/stats', async (req, res) => {
+app.get('/api/stats', authenticateToken, async (req, res) => {
   try {
     const productCount = await db.execute('SELECT COUNT(*) as count FROM product_codes');
     const recordCount = await db.execute('SELECT COUNT(*) as count FROM price_history');
@@ -334,123 +421,9 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// --- ФУНКЦИЯ ОЧИСТКИ СТАРЫХ ЗАПИСЕЙ ---
-async function cleanOldRecords() {
-  console.log('🧹 Очистка записей старше 90 дней...');
-  try {
-    const result = await db.execute({
-      sql: "DELETE FROM price_history WHERE updated_at < datetime('now', '-90 days')",
-      args: []
-    });
-    console.log(`✅ Удалено ${result.rowsAffected} старых записей`);
-  } catch (err) {
-    console.error('❌ Ошибка при очистке:', err);
-  }
-}
+// ==================== ФУНКЦИИ ОБНОВЛЕНИЯ ЦЕН ====================
 
-// --- ФУНКЦИЯ ОБНОВЛЕНИЯ ВСЕХ ЦЕН С ПАКЕТНОЙ ОТПРАВКОЙ ---
-async function updateAllPrices() {
-  console.log('🔄 Начинаем обновление цен:', new Date().toLocaleString());
-
-  try {
-    // Получаем все коды из базы
-    const codesResult = await db.execute('SELECT code FROM product_codes');
-    const allCodes = codesResult.rows.map(row => row.code);
-    
-    if (allCodes.length === 0) {
-      console.log('📭 Нет кодов для обновления');
-      return;
-    }
-
-    console.log(`📦 Всего кодов в базе: ${allCodes.length}`);
-
-    // Настройки пакетной обработки
-    const BATCH_SIZE = 100;        // Сколько кодов за один запрос
-    const DELAY_BETWEEN_BATCHES = 2000; // 2 секунды между запросами (чтобы не забанили)
-    
-    const totalBatches = Math.ceil(allCodes.length / BATCH_SIZE);
-    console.log(`📊 Будет отправлено ${totalBatches} запросов`);
-
-    let totalProcessed = 0;
-    let totalUpdated = 0;
-
-    // Отправляем запросы пачками
-    for (let i = 0; i < allCodes.length; i += BATCH_SIZE) {
-      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
-      const batch = allCodes.slice(i, i + BATCH_SIZE);
-      
-      console.log(`\n📤 Отправляем пачку ${batchNumber}/${totalBatches} (${batch.length} кодов)`);
-
-      try {
-        // Формируем и отправляем запрос к API 21vek.by
-        const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
-          headers: {
-            "accept": "application/json",
-            "content-type": "application/json"
-          },
-          body: JSON.stringify({
-            ids: batch.map(code => parseInt(code)),
-            isAdult: false,
-            limit: BATCH_SIZE
-          }),
-          method: "POST"
-        });
-
-        if (!response.ok) {
-          console.error(`❌ Ошибка HTTP в пачке ${batchNumber}: ${response.status}`);
-          // Продолжаем со следующей пачкой
-          continue;
-        }
-
-        const data = await response.json();
-        const products = data.data.productCards;
-
-        if (!products || products.length === 0) {
-          console.log(`⚠️ Пачка ${batchNumber}: нет данных от API`);
-          continue;
-        }
-
-        console.log(`📥 Пачка ${batchNumber}: получены данные для ${products.length} товаров`);
-
-        // Сохраняем каждый товар из пачки
-        for (const product of products) {
-          try {
-            await saveProductData(product);
-            totalUpdated++;
-          } catch (saveError) {
-            console.error(`❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
-          }
-        }
-
-        totalProcessed += batch.length;
-        console.log(`✅ Пачка ${batchNumber} обработана. Прогресс: ${totalProcessed}/${allCodes.length}`);
-
-      } catch (batchError) {
-        console.error(`❌ Критическая ошибка в пачке ${batchNumber}:`, batchError.message);
-      }
-
-      // Если это не последняя пачка — ждём перед следующим запросом
-      if (i + BATCH_SIZE < allCodes.length) {
-        console.log(`⏳ Ожидание ${DELAY_BETWEEN_BATCHES/1000} секунд перед следующей пачкой...`);
-        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
-      }
-    }
-
-    console.log('\n🎉 Обновление завершено!');
-    console.log(`📊 Итого обработано: ${totalProcessed} кодов`);
-    console.log(`📊 Сохранено: ${totalUpdated} товаров`);
-
-    // Если какие-то товары не обновились — выведем предупреждение
-    if (totalUpdated < totalProcessed) {
-      console.log(`⚠️ Внимание: ${totalProcessed - totalUpdated} кодов не обновились (возможно, их нет в API 21vek.by)`);
-    }
-
-  } catch (error) {
-    console.error('❌ Глобальная ошибка при обновлении цен:', error);
-  }
-}
-
-// --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ СОХРАНЕНИЯ ДАННЫХ ТОВАРА ---
+// --- Вспомогательная функция для сохранения данных товара ---
 async function saveProductData(product) {
   const code = product.code.toString();
   const price = parseFloat(product.packPrice || product.price);
@@ -515,42 +488,124 @@ async function updatePricesForNewCode(code) {
       return;
     }
 
-    const price = parseFloat(product.packPrice || product.price);
-
-    let category = 'Товары';
-    if (product.categories && product.categories.length > 0) {
-      category = product.categories[product.categories.length - 1].name;
-    }
-    const brand = product.producerName || 'Без бренда';
-
-    await db.execute({
-      sql: 'INSERT INTO price_history (product_code, product_name, price) VALUES (?, ?, ?)',
-      args: [code, product.name, price]
-    });
-
-    await db.execute({
-      sql: `
-        INSERT INTO products_info (code, name, last_price, link, category, brand, last_update)
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(code) DO UPDATE SET
-          name = excluded.name,
-          last_price = excluded.last_price,
-          link = excluded.link,
-          category = excluded.category,
-          brand = excluded.brand,
-          last_update = CURRENT_TIMESTAMP
-      `,
-      args: [code, product.name, price, product.link || '', category, brand]
-    });
-
-    console.log(`✅ Данные для нового кода ${code} загружены: ${product.name} - ${price} руб.`);
+    await saveProductData(product);
+    console.log(`✅ Данные для нового кода ${code} загружены: ${product.name} - ${product.packPrice || product.price} руб.`);
 
   } catch (error) {
     console.error(`❌ Ошибка при загрузке данных для кода ${code}:`, error);
   }
 }
 
-// --- ПЛАНИРОВЩИКИ ---
+// --- ФУНКЦИЯ ОБНОВЛЕНИЯ ВСЕХ ЦЕН С ПАКЕТНОЙ ОТПРАВКОЙ ---
+async function updateAllPrices() {
+  console.log('🔄 Начинаем обновление цен:', new Date().toLocaleString());
+
+  try {
+    const codesResult = await db.execute('SELECT code FROM product_codes');
+    const allCodes = codesResult.rows.map(row => row.code);
+    
+    if (allCodes.length === 0) {
+      console.log('📭 Нет кодов для обновления');
+      return;
+    }
+
+    console.log(`📦 Всего кодов в базе: ${allCodes.length}`);
+
+    const BATCH_SIZE = 100;
+    const DELAY_BETWEEN_BATCHES = 2000;
+    
+    const totalBatches = Math.ceil(allCodes.length / BATCH_SIZE);
+    console.log(`📊 Будет отправлено ${totalBatches} запросов`);
+
+    let totalProcessed = 0;
+    let totalUpdated = 0;
+
+    for (let i = 0; i < allCodes.length; i += BATCH_SIZE) {
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+      const batch = allCodes.slice(i, i + BATCH_SIZE);
+      
+      console.log(`\n📤 Отправляем пачку ${batchNumber}/${totalBatches} (${batch.length} кодов)`);
+
+      try {
+        const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
+          headers: {
+            "accept": "application/json",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            ids: batch.map(code => parseInt(code)),
+            isAdult: false,
+            limit: BATCH_SIZE
+          }),
+          method: "POST"
+        });
+
+        if (!response.ok) {
+          console.error(`❌ Ошибка HTTP в пачке ${batchNumber}: ${response.status}`);
+          continue;
+        }
+
+        const data = await response.json();
+        const products = data.data.productCards;
+
+        if (!products || products.length === 0) {
+          console.log(`⚠️ Пачка ${batchNumber}: нет данных от API`);
+          continue;
+        }
+
+        console.log(`📥 Пачка ${batchNumber}: получены данные для ${products.length} товаров`);
+
+        for (const product of products) {
+          try {
+            await saveProductData(product);
+            totalUpdated++;
+          } catch (saveError) {
+            console.error(`❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
+          }
+        }
+
+        totalProcessed += batch.length;
+        console.log(`✅ Пачка ${batchNumber} обработана. Прогресс: ${totalProcessed}/${allCodes.length}`);
+
+      } catch (batchError) {
+        console.error(`❌ Критическая ошибка в пачке ${batchNumber}:`, batchError.message);
+      }
+
+      if (i + BATCH_SIZE < allCodes.length) {
+        console.log(`⏳ Ожидание ${DELAY_BETWEEN_BATCHES/1000} секунд перед следующей пачкой...`);
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
+      }
+    }
+
+    console.log('\n🎉 Обновление завершено!');
+    console.log(`📊 Итого обработано: ${totalProcessed} кодов`);
+    console.log(`📊 Сохранено: ${totalUpdated} товаров`);
+
+    if (totalUpdated < totalProcessed) {
+      console.log(`⚠️ Внимание: ${totalProcessed - totalUpdated} кодов не обновились (возможно, их нет в API 21vek.by)`);
+    }
+
+  } catch (error) {
+    console.error('❌ Глобальная ошибка при обновлении цен:', error);
+  }
+}
+
+// --- ФУНКЦИЯ ОЧИСТКИ СТАРЫХ ЗАПИСЕЙ ---
+async function cleanOldRecords() {
+  console.log('🧹 Очистка записей старше 90 дней...');
+  try {
+    const result = await db.execute({
+      sql: "DELETE FROM price_history WHERE updated_at < datetime('now', '-90 days')",
+      args: []
+    });
+    console.log(`✅ Удалено ${result.rowsAffected} старых записей`);
+  } catch (err) {
+    console.error('❌ Ошибка при очистке:', err);
+  }
+}
+
+// ==================== ПЛАНИРОВЩИКИ ====================
+
 cron.schedule('0 3 * * *', () => {
   console.log('⏰ Запуск плановой очистки');
   cleanOldRecords();
@@ -561,12 +616,7 @@ cron.schedule('0 * * * *', () => {
   updateAllPrices();
 });
 
-// --- ВЕБ-ИНТЕРФЕЙС ---
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// --- ЗАПУСК СЕРВЕРА ---
+// ==================== ЗАПУСК СЕРВЕРА ====================
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
   
