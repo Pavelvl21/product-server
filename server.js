@@ -39,28 +39,41 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 // --- Маршруты (Endpoints) API ---
 
-// 1. POST-запрос для сохранения данных
-// Пример: отправить JSON на http://localhost:3000/products
+//1. POST-запрос для сохранения данных (ТЕПЕРЬ С ПРОВЕРКОЙ КЛЮЧА)
 app.post('/products', (req, res) => {
-    // Получаем данные из тела запроса
+    // Получаем секретный ключ из переменной окружения
+    const MY_SECRET_KEY = process.env.SECRET_KEY;
+    
+    // Если ключ не задан в окружении - это ошибка конфигурации
+    if (!MY_SECRET_KEY) {
+        console.error('ОШИБКА: SECRET_KEY не задан в переменных окружения!');
+        return res.status(500).json({ error: 'Ошибка конфигурации сервера' });
+    }
+    
+    // Получаем ключ из заголовка запроса
+    const userKey = req.headers['x-secret-key'];
+    
+    // Проверяем, совпадает ли ключ с вашим секретным ключом
+    if (!userKey || userKey !== MY_SECRET_KEY) {
+        return res.status(403).json({ error: 'Доступ запрещен. Неверный секретный ключ.' });
+    }
+
+    // Если ключ верный, продолжаем как обычно
     const { product_id, name, price } = req.body;
 
-    // Простейшая валидация: проверяем, что все поля на месте
     if (!product_id || !name || price === undefined) {
         return res.status(400).json({ error: 'Пожалуйста, укажите product_id, name и price.' });
     }
 
-    // Вставка данных в базу
     const sql = `INSERT INTO products (product_id, name, price) VALUES (?, ?, ?)`;
     db.run(sql, [product_id, name, price], function(err) {
         if (err) {
             console.error('Ошибка при вставке данных:', err.message);
             return res.status(500).json({ error: 'Не удалось сохранить товар.' });
         }
-        // Отправляем успешный ответ с ID созданной записи
         res.status(201).json({
             message: 'Товар успешно сохранён!',
-            id: this.lastID // ID новой записи в таблице
+            id: this.lastID
         });
     });
 });
