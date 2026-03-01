@@ -2,7 +2,7 @@ services:
   - type: web
     name: product-server
     runtime: node
-    repo: https://github.com/Pavelvl21/product-server
+    repo: https://github.com/ВАШ_ЛОГИН/НАЗВАНИЕ_РЕПОЗИТОРИЯ
     plan: free
     buildCommand: npm install
     startCommand: node server.js
