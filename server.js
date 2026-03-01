@@ -554,9 +554,10 @@ async function updatePricesForNewCode(code) {
   }
 }
 
-// --- Обновление всех цен с пакетной отправкой ---
+// --- ФУНКЦИЯ ОБНОВЛЕНИЯ ВСЕХ ЦЕН (УСКОРЕННАЯ) ---
 async function updateAllPrices() {
-  console.log('🔄 Начинаем обновление цен:', new Date().toLocaleString());
+  const startTime = Date.now();
+  console.log('🚀 Начинаем ускоренное обновление цен:', new Date().toLocaleString());
 
   try {
     const codesResult = await db.execute('SELECT code FROM product_codes');
@@ -570,25 +571,32 @@ async function updateAllPrices() {
     console.log(`📦 Всего кодов в базе: ${allCodes.length}`);
 
     const BATCH_SIZE = 100;
-    const DELAY_BETWEEN_BATCHES = 2000;
+    const CONCURRENT_LIMIT = 3; // Сколько пачек одновременно (можно увеличить до 5)
     
-    const totalBatches = Math.ceil(allCodes.length / BATCH_SIZE);
-    console.log(`📊 Будет отправлено ${totalBatches} запросов`);
-
-    let totalProcessed = 0;
-    let totalUpdated = 0;
-
+    // Разбиваем все коды на пачки
+    const batches = [];
     for (let i = 0; i < allCodes.length; i += BATCH_SIZE) {
-      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
-      const batch = allCodes.slice(i, i + BATCH_SIZE);
-      
-      console.log(`\n📤 Отправляем пачку ${batchNumber}/${totalBatches} (${batch.length} кодов)`);
+      batches.push(allCodes.slice(i, i + BATCH_SIZE));
+    }
+    
+    console.log(`📊 Будет обработано ${batches.length} пачек по ${BATCH_SIZE} кодов`);
+    console.log(`⚡ Параллельность: ${CONCURRENT_LIMIT} пачек одновременно`);
+
+    let processedBatches = 0;
+    let totalUpdated = 0;
+    let totalErrors = 0;
+
+    // Функция для обработки одной пачки
+    const processBatch = async (batch, batchIndex) => {
+      const batchNum = batchIndex + 1;
+      console.log(`📤 [Пачка ${batchNum}/${batches.length}] Отправка ${batch.length} кодов`);
 
       try {
         const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
           headers: {
             "accept": "application/json",
-            "content-type": "application/json"
+            "content-type": "application/json",
+            "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
           },
           body: JSON.stringify({
             ids: batch.map(code => parseInt(code)),
@@ -599,45 +607,61 @@ async function updateAllPrices() {
         });
 
         if (!response.ok) {
-          console.error(`❌ Ошибка HTTP в пачке ${batchNumber}: ${response.status}`);
-          continue;
+          throw new Error(`HTTP ${response.status}`);
         }
 
         const data = await response.json();
-        const products = data.data.productCards;
+        const products = data.data?.productCards || [];
 
-        if (!products || products.length === 0) {
-          console.log(`⚠️ Пачка ${batchNumber}: нет данных от API`);
-          continue;
+        console.log(`📥 [Пачка ${batchNum}] Получено ${products.length} товаров`);
+
+        if (products.length === 0) {
+          console.log(`⚠️ [Пачка ${batchNum}] Нет данных от API`);
+          return 0;
         }
 
-        console.log(`📥 Пачка ${batchNumber}: получены данные для ${products.length} товаров`);
+        // Сохраняем товары параллельно
+        const savePromises = products.map(product => 
+          saveProductData(product).catch(err => {
+            console.error(`❌ Ошибка сохранения товара ${product.code}:`, err.message);
+            return null;
+          })
+        );
 
-        for (const product of products) {
-          try {
-            await saveProductData(product);
-            totalUpdated++;
-          } catch (saveError) {
-            console.error(`❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
-          }
-        }
+        const results = await Promise.all(savePromises);
+        const successful = results.filter(r => r !== null).length;
+        
+        console.log(`✅ [Пачка ${batchNum}] Успешно сохранено: ${successful}/${products.length}`);
+        return successful;
 
-        totalProcessed += batch.length;
-        console.log(`✅ Пачка ${batchNumber} обработана. Прогресс: ${totalProcessed}/${allCodes.length}`);
-
-      } catch (batchError) {
-        console.error(`❌ Критическая ошибка в пачке ${batchNumber}:`, batchError.message);
+      } catch (error) {
+        console.error(`❌ [Пачка ${batchNum}] Ошибка:`, error.message);
+        totalErrors++;
+        return 0;
       }
+    };
 
-      if (i + BATCH_SIZE < allCodes.length) {
-        console.log(`⏳ Ожидание ${DELAY_BETWEEN_BATCHES/1000} секунд перед следующей пачкой...`);
-        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
-      }
+    // Обрабатываем пачки с ограничением параллельности
+    for (let i = 0; i < batches.length; i += CONCURRENT_LIMIT) {
+      const currentBatches = batches.slice(i, i + CONCURRENT_LIMIT);
+      console.log(`\n🔄 Запуск группы из ${currentBatches.length} параллельных пачек`);
+      
+      const results = await Promise.all(
+        currentBatches.map((batch, idx) => processBatch(batch, i + idx))
+      );
+      
+      totalUpdated += results.reduce((sum, count) => sum + (count || 0), 0);
+      processedBatches += currentBatches.length;
+      
+      console.log(`📊 Прогресс: ${processedBatches}/${batches.length} пачек, обновлено: ${totalUpdated} товаров`);
     }
 
+    const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log('\n🎉 Обновление завершено!');
-    console.log(`📊 Итого обработано: ${totalProcessed} кодов`);
-    console.log(`📊 Сохранено: ${totalUpdated} товаров`);
+    console.log(`⏱️  Время выполнения: ${totalTime} сек`);
+    console.log(`📊 Всего пачек: ${processedBatches}`);
+    console.log(`📊 Обновлено товаров: ${totalUpdated}`);
+    console.log(`📊 Ошибок: ${totalErrors}`);
 
   } catch (error) {
     console.error('❌ Глобальная ошибка при обновлении цен:', error);
@@ -660,24 +684,50 @@ async function cleanOldRecords() {
 
 // ==================== ПЛАНИРОВЩИКИ ====================
 
+// --- Расписание обновлений ---
+const schedule = [
+  '30 0 * * *',   // 0:30
+  '30 1 * * *',   // 1:30
+  '30 6 * * *',   // 6:30
+  '30 8 * * *',   // 8:30
+  '30 9 * * *',   // 9:30
+  '30 10 * * *',  // 10:30
+  '30 11 * * *',  // 11:30
+  '0 12 * * *',   // 12:00
+  '30 12 * * *',  // 12:30
+  '0 13 * * *',   // 13:00
+  '30 13 * * *',  // 13:30
+  '0 14 * * *',   // 14:00
+  '30 14 * * *',  // 14:30
+  '0 15 * * *',   // 15:00
+  '30 15 * * *',  // 15:30
+  '0 16 * * *',   // 16:00
+  '30 16 * * *',  // 16:30
+  '0 17 * * *',   // 17:00
+  '30 17 * * *',  // 17:30
+  '0 18 * * *',   // 18:00
+  '30 18 * * *',  // 18:30
+  '30 19 * * *',  // 19:30
+  '0 20 * * *',   // 20:00
+];
+
+// Запускаем каждое задание по расписанию
+schedule.forEach(cronTime => {
+  cron.schedule(cronTime, () => {
+    console.log(`⏰ Запуск обновления по расписанию ${cronTime}`);
+    updateAllPrices();
+  });
+});
+
+// Ежедневная очистка в 3:00 утра
 cron.schedule('0 3 * * *', () => {
-  console.log('⏰ Запуск плановой очистки');
+  console.log('🧹 Запуск плановой очистки старых записей');
   cleanOldRecords();
 });
 
-cron.schedule('0 * * * *', () => {
-  console.log('⏰ Запуск планового обновления цен');
+// Первое обновление при старте сервера (через 10 секунд)
+setTimeout(() => {
+  console.log('🚀 Запуск первого обновления после старта сервера');
   updateAllPrices();
-});
-
-// ==================== ЗАПУСК СЕРВЕРА ====================
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Сервер запущен на порту ${PORT}`);
-  
-  setTimeout(() => {
-    console.log('⏰ Запуск первого обновления');
-    updateAllPrices();
-    cleanOldRecords();
-  }, 10000);
-});
+  cleanOldRecords();
+}, 10000);
