@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
@@ -287,7 +286,10 @@ async function updatePricesForNewCode(code) {
     
     try {
         const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
-            "headers": { "content-type": "application/json" },
+            "headers": { 
+                "accept": "application/json",
+                "content-type": "application/json" 
+            },
             "body": JSON.stringify({ 
                 ids: [parseInt(code)], 
                 isAdult: false, 
