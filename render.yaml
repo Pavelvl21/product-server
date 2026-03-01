@@ -1,7 +1,9 @@
 services:
   - type: web
     name: product-server
-    env: node
+    runtime: node
+    repo: https://github.com/Pavelvl21/product-server
+    plan: free
     buildCommand: npm install
     startCommand: node server.js
-    plan: free
+    branch: main
