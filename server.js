@@ -161,7 +161,68 @@ app.post('/api/codes', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// --- API: МАССОВОЕ ДОБАВЛЕНИЕ КОДОВ (только с ключом) ---
+app.post('/api/codes/bulk', async (req, res) => {
+  const userKey = req.headers['x-secret-key'];
+  if (!userKey || userKey !== MY_SECRET_KEY) {
+    return res.status(403).json({ error: 'Доступ запрещен' });
+  }
 
+  const { codes } = req.body;
+
+  if (!Array.isArray(codes) || codes.length === 0) {
+    return res.status(400).json({ error: 'Нужен массив codes' });
+  }
+
+  const results = {
+    added: [],
+    failed: []
+  };
+
+  for (const code of codes) {
+    try {
+      // Проверяем валидность
+      if (!validateProductCode(code)) {
+        results.failed.push({ code, reason: 'неверный формат' });
+        continue;
+      }
+
+      // Проверяем лимит
+      const countResult = await db.execute({
+        sql: 'SELECT COUNT(*) as count FROM product_codes',
+        args: []
+      });
+      
+      if (countResult.rows[0].count >= 5000) {
+        results.failed.push({ code, reason: 'лимит 5000 товаров' });
+        continue;
+      }
+
+      // Добавляем код
+      const insertResult = await db.execute({
+        sql: 'INSERT INTO product_codes (code) VALUES (?) ON CONFLICT(code) DO NOTHING RETURNING code',
+        args: [code]
+      });
+
+      if (insertResult.rows.length > 0) {
+        results.added.push(code);
+        // Запускаем обновление для этого кода (не ждём)
+        updatePricesForNewCode(code).catch(console.error);
+      } else {
+        results.failed.push({ code, reason: 'уже существует' });
+      }
+
+    } catch (err) {
+      console.error(`Ошибка при добавлении кода ${code}:`, err);
+      results.failed.push({ code, reason: 'ошибка сервера' });
+    }
+  }
+
+  res.json({
+    message: `Добавлено ${results.added.length} кодов`,
+    results
+  });
+});
 // --- API: УДАЛИТЬ КОД ---
 app.delete('/api/codes/:code', async (req, res) => {
   const userKey = req.headers['x-secret-key'];
