@@ -52,11 +52,16 @@ const db = new sqlite3.Database(dbPath, (err) => {
                 brand TEXT
             )
         `);
+        
+        console.log('Все таблицы созданы или уже существуют');
     }
 });
 
 // --- ПОЛУЧЕНИЕ СЕКРЕТНОГО КЛЮЧА ---
 const MY_SECRET_KEY = process.env.SECRET_KEY;
+if (!MY_SECRET_KEY) {
+    console.error('ВНИМАНИЕ: SECRET_KEY не задан в переменных окружения!');
+}
 
 // --- ВАЛИДАЦИЯ КОДА ТОВАРА (только цифры, до 12 символов) ---
 function validateProductCode(code) {
@@ -96,8 +101,10 @@ app.post('/api/codes', (req, res) => {
         }
         
         if (this.changes === 0) {
-            return res.json({ message: 'Код уже существует' });
+            return res.json({ message: 'Код уже существует', code });
         }
+        
+        console.log(`✅ Новый код добавлен: ${code}, запускаем немедленное обновление`);
         
         // Запускаем немедленное обновление для нового кода
         updatePricesForNewCode(code);
@@ -127,7 +134,7 @@ app.delete('/api/codes/:code', (req, res) => {
                 return res.status(404).json({ error: 'Код не найден' });
             }
             
-            res.json({ message: 'Код удалён' });
+            res.json({ message: 'Код удалён', code });
         });
     });
 });
@@ -190,19 +197,24 @@ app.get('/api/products', (req, res) => {
     });
 });
 
-// --- ФУНКЦИЯ: Обновление цен через API 21vek.by ---
+// --- ФУНКЦИЯ: Обновление цен через API 21vek.by для всех кодов ---
 async function updateAllPrices() {
     console.log('🔄 Начинаем обновление цен:', new Date().toLocaleString());
 
     // Получаем все коды товаров
     db.all('SELECT code FROM product_codes', [], async (err, codes) => {
-        if (err || codes.length === 0) {
-            console.log('Нет кодов для обновления');
+        if (err) {
+            console.error('Ошибка при получении кодов:', err);
+            return;
+        }
+        
+        if (codes.length === 0) {
+            console.log('📭 Нет кодов для обновления');
             return;
         }
 
         const productCodes = codes.map(c => c.code);
-        console.log(`Найдено кодов: ${productCodes.length}`);
+        console.log(`📦 Найдено кодов: ${productCodes.length}`);
 
         try {
             const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
@@ -219,7 +231,7 @@ async function updateAllPrices() {
             });
 
             if (!response.ok) {
-                console.error('Ошибка HTTP:', response.status);
+                console.error('❌ Ошибка HTTP:', response.status);
                 return;
             }
 
@@ -227,11 +239,11 @@ async function updateAllPrices() {
             const products = data.data.productCards;
 
             if (!products || products.length === 0) {
-                console.log('Нет данных от API');
+                console.log('📭 Нет данных от API');
                 return;
             }
 
-            console.log(`Получены данные для ${products.length} товаров`);
+            console.log(`📥 Получены данные для ${products.length} товаров`);
 
             // Обновляем данные в БД
             db.serialize(() => {
@@ -264,48 +276,64 @@ async function updateAllPrices() {
             console.log('✅ Обновление завершено');
 
         } catch (error) {
-            console.error('Ошибка при обновлении цен:', error);
+            console.error('❌ Ошибка при обновлении цен:', error);
         }
     });
 }
 
-// Функция для обновления цен одного нового кода
+// --- ФУНКЦИЯ: Обновление цен для одного нового кода ---
 async function updatePricesForNewCode(code) {
+    console.log(`🔄 Начинаем обновление для нового кода: ${code}`);
+    
     try {
         const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
             "headers": { "content-type": "application/json" },
-            "body": JSON.stringify({ ids: [parseInt(code)], isAdult: false, limit: 1 }),
+            "body": JSON.stringify({ 
+                ids: [parseInt(code)], 
+                isAdult: false, 
+                limit: 1 
+            }),
             "method": "POST"
         });
 
-        if (response.ok) {
-            const data = await response.json();
-            const product = data.data.productCards[0];
-            
-            if (product) {
-                const price = parseFloat(product.packPrice || product.price);
-                let category = 'Товары';
-                if (product.categories && product.categories.length > 0) {
-                    category = product.categories[product.categories.length - 1].name;
-                }
-                const brand = product.producerName || 'Без бренда';
-
-                db.run(
-                    `INSERT INTO price_history (product_code, product_name, price) VALUES (?, ?, ?)`,
-                    [code, product.name, price]
-                );
-
-                db.run(
-                    `INSERT OR REPLACE INTO products_info (code, name, last_price, link, category, brand, last_update) 
-                     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                    [code, product.name, price, product.link || '', category, brand]
-                );
-
-                console.log(`✅ Данные для нового кода ${code} загружены`);
-            }
+        if (!response.ok) {
+            console.error(`❌ Ошибка HTTP для кода ${code}:`, response.status);
+            return;
         }
+
+        const data = await response.json();
+        const product = data.data.productCards[0];
+        
+        if (!product) {
+            console.log(`📭 Нет данных для кода ${code} от API`);
+            return;
+        }
+
+        const price = parseFloat(product.packPrice || product.price);
+        
+        let category = 'Товары';
+        if (product.categories && product.categories.length > 0) {
+            category = product.categories[product.categories.length - 1].name;
+        }
+        const brand = product.producerName || 'Без бренда';
+
+        // Сохраняем в историю цен
+        db.run(
+            `INSERT INTO price_history (product_code, product_name, price) VALUES (?, ?, ?)`,
+            [code, product.name, price]
+        );
+
+        // Обновляем или вставляем в products_info
+        db.run(
+            `INSERT OR REPLACE INTO products_info (code, name, last_price, link, category, brand, last_update) 
+             VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+            [code, product.name, price, product.link || '', category, brand]
+        );
+
+        console.log(`✅ Данные для нового кода ${code} загружены: ${product.name} - ${price} руб.`);
+
     } catch (error) {
-        console.error(`Ошибка при загрузке данных для кода ${code}:`, error);
+        console.error(`❌ Ошибка при загрузке данных для кода ${code}:`, error);
     }
 }
 
@@ -321,10 +349,13 @@ app.get('/', (req, res) => {
 });
 
 // --- Запуск сервера ---
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Сервер запущен на порту ${PORT}`);
     console.log(`📊 Веб-интерфейс: http://localhost:${PORT}`);
     
-    // Первое обновление через 10 секунд после старта
-    setTimeout(updateAllPrices, 10000);
+    // Первое обновление через 10 секунд после старта (если есть коды)
+    setTimeout(() => {
+        console.log('⏰ Запуск первого обновления после старта');
+        updateAllPrices();
+    }, 10000);
 });
