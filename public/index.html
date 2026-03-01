@@ -3,203 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>История цен товаров</title>
+    <title>Product Server</title>
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 20px;
-            background: #f5f5f5;
-        }
-        .container {
-            max-width: 100%;
-            overflow-x: auto;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            padding: 20px;
-        }
-        h1 {
-            margin-top: 0;
-            color: #333;
-        }
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            min-width: 600px;
-        }
-        th, td {
-            border: 1px solid #ddd;
-            padding: 12px 8px;
-            text-align: left;
-        }
-        th {
-            background-color: #4CAF50;
-            color: white;
-            position: sticky;
-            top: 0;
-        }
-        tr:nth-child(even) {
-            background-color: #f9f9f9;
-        }
-        tr:hover {
-            background-color: #f1f1f1;
-        }
-        .price-up {
-            color: #d32f2f;
-            font-weight: bold;
-        }
-        .price-down {
-            color: #388e3c;
-            font-weight: bold;
-        }
-        .product-name {
-            font-weight: 500;
-        }
-        .product-link {
-            color: #2196F3;
-            text-decoration: none;
-        }
-        .product-link:hover {
-            text-decoration: underline;
-        }
-        .category-badge {
-            background: #e0e0e0;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 12px;
-            display: inline-block;
-            margin-right: 5px;
-        }
-        .last-update {
-            color: #666;
-            font-size: 12px;
-            margin-top: 5px;
-        }
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #666;
-        }
-        .error {
-            color: #d32f2f;
-            padding: 20px;
-            text-align: center;
-            background: #ffebee;
-            border-radius: 4px;
-        }
+        body { font-family: sans-serif; padding: 2rem; background: #f4f4f4; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        code { background: #eaeaea; padding: 0.2rem 0.4rem; border-radius: 4px; }
+        .endpoint { background: #f0f0f0; padding: 0.5rem; border-radius: 4px; margin: 1rem 0; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📊 История цен товаров</h1>
-        <div id="loading" class="loading">Загрузка данных...</div>
-        <div id="error" class="error" style="display: none;"></div>
-        <div id="table-container" style="display: none;">
-            <table id="price-table">
-                <thead id="table-header">
-                    <tr>
-                        <th>Товар</th>
-                    </tr>
-                </thead>
-                <tbody id="table-body">
-                </tbody>
-            </table>
-            <div id="last-update" class="last-update"></div>
+        <h1>🚀 Product Server is Running</h1>
+        <p>Сервер для сбора и хранения цен с 21vek.by успешно работает.</p>
+        <p>Текущий статус:</p>
+        <ul>
+            <li>✅ База данных SQLite подключена</li>
+            <li>✅ API эндпоинты активны</li>
+            <li>⏳ Ожидание первого обновления цен...</li>
+        </ul>
+        <h2>Доступные API эндпоинты:</h2>
+        <div class="endpoint">
+            <strong><code>GET /api/codes</code></strong> — список всех отслеживаемых кодов товаров<br>
+            <small>Пример: <a href="/api/codes">/api/codes</a></small>
         </div>
+        <div class="endpoint">
+            <strong><code>GET /api/products</code></strong> — данные о ценах для таблицы<br>
+            <small>Пример: <a href="/api/products">/api/products</a></small>
+        </div>
+        <p><em>Сайт с красивой таблицей доступен отдельно: <a href="https://price-hunter.vercel.app" target="_blank">Price Hunter на Vercel</a></em></p>
     </div>
-
-    <script>
-        async function loadData() {
-            try {
-                const response = await fetch('/api/products');
-                if (!response.ok) throw new Error('Ошибка загрузки данных');
-                
-                const data = await response.json();
-                
-                if (data.dates.length === 0) {
-                    document.getElementById('loading').textContent = 'Нет данных о товарах';
-                    return;
-                }
-
-                // Скрываем загрузку, показываем таблицу
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('table-container').style.display = 'block';
-
-                // Строим заголовки
-                const headerRow = document.getElementById('table-header').querySelector('tr');
-                data.dates.forEach(date => {
-                    const th = document.createElement('th');
-                    // Форматируем дату
-                    const [year, month, day] = date.split('-');
-                    th.textContent = `${day}.${month}.${year}`;
-                    headerRow.appendChild(th);
-                });
-
-                // Строим строки товаров
-                const tbody = document.getElementById('table-body');
-                
-                data.products.forEach(product => {
-                    const row = document.createElement('tr');
-                    
-                    // Колонка с названием товара
-                    const nameCell = document.createElement('td');
-                    nameCell.innerHTML = `
-                        <div class="product-name">${product.name}</div>
-                        ${product.brand ? `<span class="category-badge">${product.brand}</span>` : ''}
-                        ${product.category ? `<span class="category-badge">${product.category}</span>` : ''}
-                        ${product.link ? `<div><a href="https://www.21vek.by${product.link}" target="_blank" class="product-link">🔗 Открыть</a></div>` : ''}
-                    `;
-                    row.appendChild(nameCell);
-
-                    // Колонки с ценами по датам
-                    data.dates.forEach(date => {
-                        const priceCell = document.createElement('td');
-                        const price = product.prices[date];
-                        
-                        if (price) {
-                            priceCell.textContent = price.toFixed(2) + ' ₽';
-                            
-                            // Добавляем класс для выделения изменений
-                            const prevDate = data.dates[data.dates.indexOf(date) + 1];
-                            if (prevDate && product.prices[prevDate]) {
-                                const prevPrice = product.prices[prevDate];
-                                if (price > prevPrice) {
-                                    priceCell.classList.add('price-up');
-                                    priceCell.innerHTML += ' 📈';
-                                } else if (price < prevPrice) {
-                                    priceCell.classList.add('price-down');
-                                    priceCell.innerHTML += ' 📉';
-                                }
-                            }
-                        } else {
-                            priceCell.textContent = '—';
-                            priceCell.style.color = '#999';
-                        }
-                        
-                        row.appendChild(priceCell);
-                    });
-
-                    tbody.appendChild(row);
-                });
-
-                // Обновляем время последнего обновления
-                document.getElementById('last-update').textContent = 
-                    `Последнее обновление: ${new Date().toLocaleString()}`;
-
-            } catch (error) {
-                document.getElementById('loading').style.display = 'none';
-                const errorDiv = document.getElementById('error');
-                errorDiv.style.display = 'block';
-                errorDiv.textContent = 'Ошибка загрузки данных: ' + error.message;
-                console.error(error);
-            }
-        }
-
-        // Загружаем данные при открытии страницы
-        loadData();
-
-        // Автообновление каждые 5 минут
-        setInterval(loadData, 5 * 60 * 1000);
-    </script>
 </body>
 </html>
