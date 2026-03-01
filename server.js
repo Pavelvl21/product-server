@@ -554,7 +554,7 @@ async function updatePricesForNewCode(code) {
   }
 }
 
-// --- ФУНКЦИЯ ОБНОВЛЕНИЯ ВСЕХ ЦЕН (УСКОРЕННАЯ) ---
+// --- ФУНКЦИЯ ОБНОВЛЕНИЯ ВСЕХ ЦЕН С ПАКЕТНОЙ ОТПРАВКОЙ (УСКОРЕННАЯ) ---
 async function updateAllPrices() {
   const startTime = Date.now();
   console.log('🚀 Начинаем ускоренное обновление цен:', new Date().toLocaleString());
@@ -571,7 +571,7 @@ async function updateAllPrices() {
     console.log(`📦 Всего кодов в базе: ${allCodes.length}`);
 
     const BATCH_SIZE = 100;
-    const CONCURRENT_LIMIT = 3; // Сколько пачек одновременно (можно увеличить до 5)
+    const CONCURRENT_LIMIT = 3; // Сколько пачек одновременно
     
     // Разбиваем все коды на пачки
     const batches = [];
@@ -731,3 +731,9 @@ setTimeout(() => {
   updateAllPrices();
   cleanOldRecords();
 }, 10000);
+
+// ==================== ЗАПУСК СЕРВЕРА ====================
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Сервер запущен на порту ${PORT}`);
+});
