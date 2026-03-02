@@ -330,15 +330,31 @@ function buildPricesMap(history, allDates) {
 }
 
 app.get('/api/stats', authenticateToken, async (req, res) => {
-  const productCount = await db.execute('SELECT COUNT(*) as c FROM product_codes');
-  const recordCount = await db.execute('SELECT COUNT(*) as c FROM price_history');
-  
-  res.json({
-    total_products: productCount.rows[0].c,
-    total_records: recordCount.rows[0].c,
-    product_limit: 5000,
-    storage_limit_mb: 5000
-  });
+  try {
+    const productCount = await db.execute('SELECT COUNT(*) as count FROM product_codes');
+    const recordCount = await db.execute('SELECT COUNT(*) as count FROM price_history');
+    const oldest = await db.execute('SELECT MIN(updated_at) as min FROM price_history');
+    const newest = await db.execute('SELECT MAX(updated_at) as max FROM price_history');
+
+    const totalRecords = recordCount.rows[0].count;
+    const estimatedSizeMB = (totalRecords * 0.0002).toFixed(2);
+
+    res.json({
+      total_products: productCount.rows[0].count,
+      total_records: totalRecords,
+      oldest_record: oldest.rows[0]?.min,
+      newest_record: newest.rows[0]?.max,
+      db_size_mb: estimatedSizeMB,
+      storage_limit_mb: 5000,
+      usage_percent: (estimatedSizeMB / 50).toFixed(1),
+      product_limit: 5000,
+      product_usage_percent: (productCount.rows[0].count / 5000) * 100
+    });
+
+  } catch (err) {
+    console.error('Ошибка статистики:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 setupBotEndpoints(app, authenticateToken);
