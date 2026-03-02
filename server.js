@@ -1,4 +1,4 @@
-// server.js - Полный код с умной историей и временем изменений
+// server.js - Полный код с умной агрегацией данных
 import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
@@ -382,10 +382,11 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ОСНОВНОЙ ЭНДПОИНТ С УМНОЙ ИСТОРИЕЙ ====================
+// ==================== ОСНОВНОЙ ЭНДПОИНТ С УМНОЙ АГРЕГАЦИЕЙ ====================
 
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
+    // Получаем все записи за последние 90 дней
     const historyResult = await db.execute(`
       SELECT 
         p.code,
@@ -398,9 +399,10 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       FROM products_info p
       LEFT JOIN price_history ph ON p.code = ph.product_code
         AND ph.updated_at >= datetime('now', '-90 days')
-      ORDER BY p.name, ph.updated_at DESC
+      ORDER BY p.name, ph.updated_at ASC
     `);
 
+    // Получаем последнюю цену для каждого товара
     const latestPricesResult = await db.execute(`
       SELECT 
         product_code,
@@ -410,7 +412,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       WHERE (product_code, updated_at) IN (
         SELECT product_code, MAX(updated_at)
         FROM price_history
-        WHERE updated_at >= datetime('now', '-90 days')
         GROUP BY product_code
       )
     `);
@@ -423,6 +424,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       });
     });
 
+    // Группируем по товарам
     const products = {};
     historyResult.rows.forEach(row => {
       if (!products[row.code]) {
@@ -432,52 +434,58 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           link: row.link,
           category: row.category,
           brand: row.brand,
-          prices: {},
-          priceHistory: []
+          dailyPrices: {}, // для таблицы (одна цена на день)
+          priceHistory: [] // для детальной страницы (все изменения)
         };
       }
       
       if (row.updated_at) {
-        const date = row.updated_at.split(' ')[0];
-        const time = row.updated_at.split(' ')[1];
+        const date = row.updated_at.split(' ')[0]; // YYYY-MM-DD
         
-        if (!products[row.code].prices[date] || 
-            products[row.code].prices[date].time < time) {
-          products[row.code].prices[date] = {
-            price: row.price,
-            time: time,
-            fullDate: row.updated_at
-          };
-        }
-        
+        // Для priceHistory сохраняем всё с временем
         products[row.code].priceHistory.push({
           date: row.updated_at,
           price: row.price
         });
+        
+        // Для dailyPrices оставляем только последнюю цену дня
+        if (!products[row.code].dailyPrices[date] || 
+            products[row.code].dailyPrices[date].updated_at < row.updated_at) {
+          products[row.code].dailyPrices[date] = {
+            price: row.price,
+            updated_at: row.updated_at
+          };
+        }
       }
     });
 
+    // Формируем ответ
     const productsArray = Object.values(products).map(p => {
-      const formattedPrices = {};
-      Object.entries(p.prices).forEach(([date, value]) => {
-        formattedPrices[date] = value.price;
+      // Для таблицы оставляем только дату и последнюю цену дня
+      const tablePrices = {};
+      Object.entries(p.dailyPrices).forEach(([date, value]) => {
+        tablePrices[date] = value.price;
       });
       
+      // Сортируем историю по дате
+      const sortedHistory = p.priceHistory.sort((a, b) => 
+        new Date(a.date) - new Date(b.date)
+      );
+
       return {
         code: p.code,
         name: p.name,
         link: p.link,
         category: p.category,
         brand: p.brand,
-        prices: formattedPrices,
-        priceHistory: p.priceHistory.sort((a, b) => 
-          new Date(b.date) - new Date(a.date)
-        ),
+        prices: tablePrices, // для таблицы
+        priceHistory: sortedHistory, // для детальной страницы
         currentPrice: latestPrices.get(p.code)?.price || null,
         lastUpdate: latestPrices.get(p.code)?.updated_at || null
       };
     });
 
+    // Получаем все уникальные даты для заголовков таблицы
     const datesResult = await db.execute(`
       SELECT DISTINCT DATE(updated_at) as update_date
       FROM price_history
