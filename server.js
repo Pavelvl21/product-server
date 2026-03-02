@@ -313,22 +313,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   res.json({ dates: allDates.reverse(), products: result });
 });
 
-function buildPricesMap(history, allDates) {
-  const prices = {};
-  allDates.forEach(date => {
-    const dayRecords = history.filter(h => h.date.startsWith(date));
-    if (dayRecords.length > 0) {
-      const last = dayRecords.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
-      prices[date] = last.price;
-    } else {
-      const prev = history.filter(h => h.date < date)
-        .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
-      if (prev) prices[date] = prev.price;
-    }
-  });
-  return prices;
-}
-
 app.get('/api/stats', authenticateToken, async (req, res) => {
   try {
     const productCount = await db.execute('SELECT COUNT(*) as count FROM product_codes');
