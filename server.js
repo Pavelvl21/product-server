@@ -1,4 +1,4 @@
-// server.js - Полный код для вашего фронтенда
+// server.js - Полный код с фильтрацией только изменений цен
 import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
@@ -382,7 +382,7 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ОСНОВНОЙ ЭНДПОИНТ ДЛЯ ФРОНТЕНДА ====================
+// ==================== ИСПРАВЛЕННЫЙ ЭНДПОИНТ (ТОЛЬКО ИЗМЕНЕНИЯ) ====================
 
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
@@ -404,6 +404,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
 
     // Группируем историю по товарам
     const historyByProduct = {};
+    
     historyResult.rows.forEach(row => {
       if (!historyByProduct[row.product_code]) {
         historyByProduct[row.product_code] = [];
@@ -414,21 +415,46 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       });
     });
 
-    // Формируем массив товаров в формате, который ожидает фронтенд
+    // Фильтруем историю для каждого товара - оставляем только изменения
+    Object.keys(historyByProduct).forEach(code => {
+      const history = historyByProduct[code];
+      const filteredHistory = [];
+      let lastPrice = null;
+      
+      history.forEach(record => {
+        if (lastPrice === null || Math.abs(record.price - lastPrice) > 0.01) {
+          filteredHistory.push(record);
+          lastPrice = record.price;
+        }
+      });
+      
+      historyByProduct[code] = filteredHistory;
+    });
+
+    // Формируем массив товаров
     const products = productsResult.rows.map(product => {
       const productHistory = historyByProduct[product.code] || [];
       
-      // Создаем объект prices для таблицы (дата -> цена)
+      // Создаем объект prices для таблицы (дата -> последняя цена дня)
       const prices = {};
+      const dailyGroups = {};
+      
       productHistory.forEach(record => {
-        const date = record.date.split(' ')[0]; // YYYY-MM-DD
-        prices[date] = record.price;
+        const date = record.date.split(' ')[0];
+        if (!dailyGroups[date]) {
+          dailyGroups[date] = [];
+        }
+        dailyGroups[date].push(record);
       });
-
-      // Сортируем историю по дате для графика
-      const sortedHistory = [...productHistory].sort((a, b) => 
-        new Date(a.date) - new Date(b.date)
-      );
+      
+      // Для каждого дня берем последнее изменение
+      Object.entries(dailyGroups).forEach(([date, records]) => {
+        // Берем последнюю запись за день
+        const lastRecord = records.sort((a, b) => 
+          new Date(b.date) - new Date(a.date)
+        )[0];
+        prices[date] = lastRecord.price;
+      });
 
       return {
         code: product.code,
@@ -436,8 +462,8 @@ app.get('/api/products', authenticateToken, async (req, res) => {
         link: product.link,
         category: product.category || 'Товары',
         brand: product.brand || 'Без бренда',
-        prices: prices, // для таблицы
-        priceHistory: sortedHistory, // для детальной страницы
+        prices: prices,
+        priceHistory: productHistory, // ТОЛЬКО ИЗМЕНЕНИЯ!
         currentPrice: product.last_price,
         lastUpdate: product.last_update
       };
