@@ -548,7 +548,7 @@ async function saveProductData(product, timestamp) {
   const code = product.code.toString();
   const price = parseFloat(product.packPrice || product.price);
   const now = timestamp || new Date();
-  const today = now.toISOString().split('T')[0];
+  const today = now.toISOString().split('T')[0]; // YYYY-MM-DD
 
   let category = 'Товары';
   if (product.categories && product.categories.length > 0) {
@@ -557,6 +557,7 @@ async function saveProductData(product, timestamp) {
   const brand = product.producerName || 'Без бренда';
 
   try {
+    // Получаем последнюю запись для этого товара
     const lastRecord = await db.execute({
       sql: `SELECT price, updated_at FROM price_history 
             WHERE product_code = ? 
@@ -564,10 +565,11 @@ async function saveProductData(product, timestamp) {
       args: [code]
     });
 
+    // Проверяем, есть ли запись за сегодня
     const todayRecord = await db.execute({
-      sql: `SELECT id, price FROM price_history 
+      sql: `SELECT id FROM price_history 
             WHERE product_code = ? AND DATE(updated_at) = ? 
-            ORDER BY updated_at DESC LIMIT 1`,
+            LIMIT 1`,
       args: [code, today]
     });
 
@@ -575,22 +577,24 @@ async function saveProductData(product, timestamp) {
     const lastDate = lastRecord.rows[0]?.updated_at;
     const lastDateDay = lastDate ? lastDate.split(' ')[0] : null;
 
+    // Логика принятия решения
     if (todayRecord.rows.length === 0) {
+      // Нет записи за сегодня - сохраняем всегда (это первая запись дня)
       console.log(`📝 Первая запись за ${today} для ${code}`);
       await insertPriceRecord(code, product.name, price, now);
     } else {
+      // Запись за сегодня уже есть
       if (Math.abs(price - lastPrice) > 0.01) {
+        // Цена изменилась - сохраняем с точным временем
         console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
         await insertPriceRecord(code, product.name, price, now);
       } else {
-        if (lastDateDay !== today) {
-          console.log(`⏭️ Цена не изменилась, пропускаем (уже есть запись за сегодня)`);
-        } else {
-          console.log(`⏭️ Цена не изменилась, пропускаем (последняя запись сегодня)`);
-        }
+        // Цена не изменилась - ничего не делаем
+        console.log(`⏭️ Цена не изменилась для ${code}, пропускаем`);
       }
     }
 
+    // Обновляем products_info всегда
     await db.execute({
       sql: `
         INSERT INTO products_info (code, name, last_price, link, category, brand, last_update)
