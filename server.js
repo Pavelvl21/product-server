@@ -400,7 +400,7 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// --- ИСПРАВЛЕННЫЙ ЭНДПОИНТ: Получить данные для таблицы ---
+// --- ЭНДПОИНТ: Получить данные для таблицы (с историей) ---
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
     // Получаем все уникальные даты за последние 90 дней
@@ -413,29 +413,20 @@ app.get('/api/products', authenticateToken, async (req, res) => {
 
     const dateColumns = datesResult.rows.map(row => row.update_date);
 
-    // Получаем товары с их последними ценами из price_history
+    // Получаем все товары с их ценами из price_history
     const productsResult = await db.execute(`
-      WITH latest_prices AS (
-        SELECT 
-          product_code,
-          product_name,
-          price,
-          DATE(updated_at) as update_date,
-          ROW_NUMBER() OVER (PARTITION BY product_code ORDER BY updated_at DESC) as rn
-        FROM price_history
-        WHERE updated_at >= datetime('now', '-90 days')
-      )
       SELECT 
         p.code,
         p.name,
         p.link,
         p.category,
         p.brand,
-        lp.price,
-        lp.update_date
+        ph.price,
+        DATE(ph.updated_at) as update_date
       FROM products_info p
-      LEFT JOIN latest_prices lp ON p.code = lp.product_code AND lp.rn = 1
-      ORDER BY p.name
+      LEFT JOIN price_history ph ON p.code = ph.product_code
+        AND ph.updated_at >= datetime('now', '-90 days')
+      ORDER BY p.name, ph.updated_at DESC
     `);
 
     const products = {};
