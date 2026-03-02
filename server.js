@@ -11,6 +11,7 @@ import {
   formatPriceChangeNotification,
   sendBatchUpdateNotification 
 } from './telegram.js';
+import { handleTelegramUpdate } from './telegramBot.js';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -31,6 +32,55 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Эндпоинт для вебхука Telegram
+app.post('/api/telegram/webhook', async (req, res) => {
+  try {
+    const update = req.body;
+    console.log('📩 Получено обновление от Telegram:', update.update_id);
+    
+    // Обрабатываем обновление
+    await handleTelegramUpdate(update);
+    
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('❌ Ошибка webhook:', err);
+    res.sendStatus(500);
+  }
+});
+
+// Эндпоинт для установки вебхука (вызвать один раз)
+app.post('/api/telegram/set-webhook', authenticateToken, async (req, res) => {
+  const { url } = req.body;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'URL обязателен' });
+  }
+
+  try {
+    const webhookUrl = `${url}/api/telegram/webhook`;
+    const response = await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/setWebhook?url=${webhookUrl}`
+    );
+    const data = await response.json();
+    
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Для отладки можно получить информацию о вебхуке
+app.get('/api/telegram/webhook-info', authenticateToken, async (req, res) => {
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getWebhookInfo`
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // --- CORS ---
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'https://price-hunter-bel.vercel.app');
