@@ -76,7 +76,8 @@ export async function initTables() {
         requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         approved_at DATETIME,
         approved_by TEXT,
-        chat_id INTEGER
+        chat_id INTEGER,
+        selected_categories TEXT DEFAULT '[]'
       )
     `);
     
