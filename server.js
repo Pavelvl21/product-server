@@ -695,6 +695,7 @@ async function updateAllPrices() {
     let processedBatches = 0;
     let totalUpdated = 0;
     let totalErrors = 0;
+    let totalNewRecords = 0; // Добавляем счетчик новых записей
 
     const processBatch = async (batch, batchIndex) => {
       const batchNum = batchIndex + 1;
@@ -728,11 +729,38 @@ async function updateAllPrices() {
 
         if (products.length === 0) {
           console.log(`⚠️ [Пачка ${batchNum}] Нет данных от API`);
-          return 0;
+          return { updated: 0, newRecords: 0 };
         }
 
+        let batchNewRecords = 0;
+        
         for (const product of products) {
           try {
+            // Проверяем, будет ли новая запись
+            const today = new Date().toISOString().split('T')[0];
+            const lastRecord = await db.execute({
+              sql: `SELECT price FROM price_history 
+                    WHERE product_code = ? 
+                    ORDER BY updated_at DESC LIMIT 1`,
+              args: [product.code.toString()]
+            });
+            
+            const todayRecord = await db.execute({
+              sql: `SELECT id FROM price_history 
+                    WHERE product_code = ? AND DATE(updated_at) = ? 
+                    LIMIT 1`,
+              args: [product.code.toString(), today]
+            });
+            
+            const currentPrice = parseFloat(product.packPrice || product.price);
+            const lastPrice = lastRecord.rows[0]?.price;
+            
+            // Если нет записи за сегодня или цена изменилась - будет новая запись
+            if (todayRecord.rows.length === 0 || 
+                (lastPrice !== undefined && Math.abs(currentPrice - lastPrice) > 0.01)) {
+              batchNewRecords++;
+            }
+            
             await saveProductData(product, batchStartTime);
           } catch (saveError) {
             console.error(`❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
@@ -740,12 +768,12 @@ async function updateAllPrices() {
         }
 
         console.log(`✅ [Пачка ${batchNum}] Успешно обработана`);
-        return products.length;
+        return { updated: products.length, newRecords: batchNewRecords };
 
       } catch (error) {
         console.error(`❌ [Пачка ${batchNum}] Ошибка:`, error.message);
         totalErrors++;
-        return 0;
+        return { updated: 0, newRecords: 0 };
       }
     };
 
@@ -757,18 +785,45 @@ async function updateAllPrices() {
         currentBatches.map((batch, idx) => processBatch(batch, i + idx))
       );
       
-      totalUpdated += results.reduce((sum, count) => sum + (count || 0), 0);
+      results.forEach(result => {
+        totalUpdated += result.updated || 0;
+        totalNewRecords += result.newRecords || 0;
+      });
+      
       processedBatches += currentBatches.length;
       
       console.log(`📊 Прогресс: ${processedBatches}/${batches.length} пачек`);
     }
 
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+    
     console.log('\n🎉 Обновление завершено!');
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
+    
+    // ОТПРАВЛЯЕМ ИТОГОВОЕ УВЕДОМЛЕНИЕ
+    if (isTelegramConfigured()) {
+      const stats = {
+        updated: totalUpdated,
+        newRecords: totalNewRecords,
+        errors: totalErrors,
+        duration: totalTime,
+        totalProducts: allCodes.length
+      };
+      
+      await sendBatchUpdateNotification(stats);
+    }
 
   } catch (error) {
     console.error('❌ Глобальная ошибка при обновлении цен:', error);
+    
+    // Уведомление об ошибке
+    await sendTelegramMessage(`
+⚠️ <b>Ошибка при массовом обновлении</b>
+
+${error.message}
+
+🕐 ${new Date().toLocaleString('ru-RU')}
+`);
   }
 }
 
