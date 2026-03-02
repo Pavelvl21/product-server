@@ -28,35 +28,6 @@ async function sendMessage(chatId, text, options = {}) {
   }
 }
 
-async function sendWithKeyboard(chatId, text, buttons) {
-  if (!BOT_TOKEN) return false;
-  
-  const keyboard = {
-    inline_keyboard: buttons.map(b => [{
-      text: b.text,
-      callback_data: b.callback_data
-    }])
-  };
-
-  try {
-    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: text,
-        parse_mode: 'HTML',
-        reply_markup: keyboard
-      })
-    });
-    return await res.json();
-  } catch (err) {
-    console.error('Telegram keyboard error:', err);
-    return false;
-  }
-}
-
 async function answerCallback(callbackId, text) {
   if (!BOT_TOKEN) return;
   
@@ -78,16 +49,24 @@ async function answerCallback(callbackId, text) {
 
 async function getUser(telegramId) {
   const result = await db.execute({
-    sql: 'SELECT status, chat_id, selected_category FROM telegram_users WHERE telegram_id = ?',
+    sql: 'SELECT status, chat_id, selected_categories FROM telegram_users WHERE telegram_id = ?',
     args: [telegramId]
   });
-  return result.rows[0];
+  
+  if (result.rows[0]) {
+    const user = result.rows[0];
+    user.selected_categories = user.selected_categories 
+      ? JSON.parse(user.selected_categories) 
+      : [];
+    return user;
+  }
+  return null;
 }
 
 async function saveUser(telegramId, username, firstName, lastName, chatId) {
   await db.execute({
-    sql: `INSERT INTO telegram_users (telegram_id, username, first_name, last_name, chat_id, status)
-          VALUES (?, ?, ?, ?, ?, 'pending')
+    sql: `INSERT INTO telegram_users (telegram_id, username, first_name, last_name, chat_id, status, selected_categories)
+          VALUES (?, ?, ?, ?, ?, 'pending', '[]')
           ON CONFLICT(telegram_id) DO UPDATE SET
             username = excluded.username,
             first_name = excluded.first_name,
@@ -114,10 +93,10 @@ async function updateUserStatus(telegramId, status, approvedBy = null) {
   });
 }
 
-async function updateUserCategory(telegramId, category) {
+async function updateUserCategories(telegramId, categories) {
   await db.execute({
-    sql: 'UPDATE telegram_users SET selected_category = ? WHERE telegram_id = ?',
-    args: [category, telegramId]
+    sql: 'UPDATE telegram_users SET selected_categories = ? WHERE telegram_id = ?',
+    args: [JSON.stringify(categories), telegramId]
   });
 }
 
@@ -127,7 +106,7 @@ async function getAllCategories() {
   const result = await db.execute(`
     SELECT DISTINCT category 
     FROM products_info 
-    WHERE category IS NOT NULL 
+    WHERE category IS NOT NULL AND category != ''
     ORDER BY category
   `);
   return result.rows.map(row => row.category);
@@ -153,26 +132,83 @@ async function getProductsByCategory(category) {
   return result.rows;
 }
 
-function formatProductMessage(product) {
-  const formatPrice = (price) => {
-    return price ? price.toFixed(2).replace('.', ',') : '—';
+async function showCategoriesWithMultiSelect(chatId, messageId = null) {
+  const categories = await getAllCategories();
+  
+  if (categories.length === 0) {
+    await sendMessage(chatId, '📭 В базе пока нет категорий');
+    return;
+  }
+
+  const user = await getUser(chatId);
+  const selectedCategories = user?.selected_categories || [];
+
+  const buttons = categories.map(cat => {
+    const isSelected = selectedCategories.includes(cat);
+    return [{
+      text: isSelected ? `✅ ${cat}` : `⬜️ ${cat}`,
+      callback_data: `toggle_cat_${cat}`
+    }];
+  });
+
+  buttons.push([{
+    text: '✅ Подтвердить выбор',
+    callback_data: 'confirm_categories'
+  }]);
+
+  buttons.unshift([{
+    text: selectedCategories.length === categories.length 
+      ? '🔲 Снять все' 
+      : '✅ Выбрать все',
+    callback_data: 'toggle_all_categories'
+  }]);
+
+  const keyboard = {
+    inline_keyboard: buttons,
+    resize_keyboard: true
   };
 
-  // Формируем полную ссылку
-  const fullLink = product.link 
-    ? `https://www.21vek.by${product.link}` 
-    : null;
+  const text = `📁 *Выберите категории*\n\nВыбрано: ${selectedCategories.length} из ${categories.length}\n\n_Нажимайте на категории для выбора, затем подтвердите._`;
 
-  return `
-🛍 <b>${product.name}</b>
+  if (messageId) {
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: text,
+        parse_mode: 'Markdown',
+        reply_markup: keyboard
+      })
+    });
+  } else {
+    await sendMessage(chatId, text, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard
+    });
+  }
+}
 
-📋 Код товара: <code>${product.code}</code>
-💰 <b>РЦ: ${formatPrice(product.last_price)} руб.</b>
-💳 Цена в рассрочку: ${formatPrice(product.packPrice)} руб.
-📆 Платеж: ${product.monthly_payment ? product.monthly_payment.replace('.', ',') : '—'} руб./мес
-⏱ Рассрочка: ${product.no_overpayment_max_months || '—'} мес.
-${fullLink ? `🔗 <a href="${fullLink}">Ссылка на товар</a>` : ''}
-`;
+async function toggleCategory(telegramId, category) {
+  const user = await getUser(telegramId);
+  let selected = user?.selected_categories || [];
+  
+  if (selected.includes(category)) {
+    selected = selected.filter(c => c !== category);
+  } else {
+    selected.push(category);
+  }
+  
+  await updateUserCategories(telegramId, selected);
+  return selected;
+}
+
+async function setAllCategories(telegramId, selectAll) {
+  const categories = await getAllCategories();
+  const selected = selectAll ? categories : [];
+  await updateUserCategories(telegramId, selected);
+  return selected;
 }
 
 // ==================== ОБРАБОТЧИКИ ====================
@@ -186,15 +222,17 @@ async function notifyAdminAboutNewUser(userId, username, firstName, chatId) {
     `🕐 ${new Date().toLocaleString('ru-RU')}`
   ].join('\n');
 
-  await sendWithKeyboard(
-    ADMIN_CHAT_ID,
-    `🔔 <b>Новый запрос на доступ!</b>\n\n${info}`,
-    [
+  const keyboard = {
+    inline_keyboard: [[
       { text: '✅ Разрешить', callback_data: `approve_${userId}` },
       { text: '❌ Отклонить', callback_data: `reject_${userId}` },
       { text: '🚫 Заблокировать', callback_data: `block_${userId}` }
-    ]
-  );
+    ]]
+  };
+
+  await sendMessage(ADMIN_CHAT_ID, `🔔 <b>Новый запрос на доступ!</b>\n\n${info}`, {
+    reply_markup: keyboard
+  });
 }
 
 async function handleMessage(message) {
@@ -207,7 +245,6 @@ async function handleMessage(message) {
 
   const user = await getUser(userId);
 
-  // /start всегда доступен
   if (text === '/start') {
     if (!user) {
       await saveUser(userId, username, firstName, lastName, chatId);
@@ -227,72 +264,70 @@ async function handleMessage(message) {
     return;
   }
 
-  // Для неподтверждённых игнорируем
   if (!user || user.status !== 'approved') return;
 
-  // Команды для подтверждённых
   if (text === '/help') {
     await sendMessage(chatId,
       '📋 <b>Доступные команды:</b>\n\n' +
       '/start - приветствие\n' +
       '/help - это сообщение\n' +
       '/status - проверить статус\n' +
-      '/select - выбрать категорию товаров\n' +
-      '/goods - показать товары из выбранной категории'
+      '/select - выбрать категории товаров\n' +
+      '/goods - показать товары из выбранных категорий'
     );
   } else if (text === '/status') {
-    const categoryInfo = user.selected_category 
-      ? `\n📁 Выбранная категория: ${user.selected_category}` 
-      : '\n📁 Категория не выбрана';
+    const categories = user.selected_categories || [];
+    const categoriesInfo = categories.length > 0 
+      ? `\n📁 Выбранные категории (${categories.length}):\n${categories.map(c => `• ${c}`).join('\n')}` 
+      : '\n📁 Категории не выбраны';
     
     await sendMessage(chatId,
       `✅ <b>Статус:</b> подтверждён\n` +
-      `🆔 ID: <code>${userId}</code>${categoryInfo}`
+      `🆔 ID: <code>${userId}</code>${categoriesInfo}`
     );
   } else if (text === '/select') {
-    const categories = await getAllCategories();
-    
-    if (categories.length === 0) {
-      await sendMessage(chatId, '📭 В базе пока нет категорий');
-      return;
-    }
-
-    // Разбиваем на ряды по 2 кнопки для компактности
-    const buttons = [];
-    for (let i = 0; i < categories.length; i += 2) {
-      const row = [];
-      row.push({ text: categories[i], callback_data: `cat_${categories[i]}` });
-      if (i + 1 < categories.length) {
-        row.push({ text: categories[i + 1], callback_data: `cat_${categories[i + 1]}` });
-      }
-      buttons.push(row);
-    }
-
-    const keyboard = {
-      inline_keyboard: buttons
-    };
-
-    await sendMessage(chatId, '📁 Выберите категорию:', { reply_markup: keyboard });
+    await showCategoriesWithMultiSelect(chatId);
   } else if (text === '/goods') {
-    if (!user.selected_category) {
-      await sendMessage(chatId, '❌ Сначала выберите категорию через /select');
-      return;
-    }
-
-    const products = await getProductsByCategory(user.selected_category);
+    const selectedCategories = user?.selected_categories || [];
     
-    if (products.length === 0) {
-      await sendMessage(chatId, `📭 В категории "${user.selected_category}" нет товаров`);
+    if (selectedCategories.length === 0) {
+      await sendMessage(chatId, '❌ Сначала выберите категории через /select');
       return;
     }
 
-    await sendMessage(chatId, `📦 Найдено товаров: ${products.length}\nОтправляю список...`);
+    let allProducts = [];
+    for (const category of selectedCategories) {
+      const products = await getProductsByCategory(category);
+      allProducts = [...allProducts, ...products];
+    }
+    
+    if (allProducts.length === 0) {
+      await sendMessage(chatId, `📭 В выбранных категориях нет товаров`);
+      return;
+    }
 
-    // Отправляем товары по одному (чтобы не превысить лимит Telegram)
-    for (const product of products) {
-      const productText = formatProductMessage(product);
+    await sendMessage(chatId, `📦 Найдено товаров: ${allProducts.length}\nОтправляю список...`);
+
+    for (const product of allProducts) {
+      const formatPrice = (price) => {
+        return price ? price.toFixed(2).replace('.', ',') : '—';
+      };
+
+      const fullLink = product.link 
+        ? `https://www.21vek.by${product.link}` 
+        : null;
+        
+      const productText = `
+🛍 <b>${product.name}</b>
+
+📋 Код товара: <code>${product.code}</code>
+💰 <b>РЦ: ${formatPrice(product.last_price)} руб.</b>
+💳 Цена в рассрочку: ${formatPrice(product.packPrice)} руб.
+📆 Платеж: ${product.monthly_payment || '—'} руб./мес
+⏱ Рассрочка: ${product.no_overpayment_max_months || '—'} мес.
+${fullLink ? `🔗 <a href="${fullLink}">Ссылка на товар</a>` : ''}
+`;
       await sendMessage(chatId, productText);
-      // Небольшая задержка, чтобы не флудить
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   } else {
@@ -305,12 +340,29 @@ async function handleCallback(query) {
   const message = query.message;
   const fromId = query.from.id;
 
-  // Обработка выбора категории
-  if (data.startsWith('cat_')) {
-    const category = data.replace('cat_', '');
-    await updateUserCategory(fromId, category);
+  if (data.startsWith('toggle_cat_')) {
+    const category = data.replace('toggle_cat_', '');
+    await toggleCategory(fromId, category);
+    await showCategoriesWithMultiSelect(message.chat.id, message.message_id);
+    await answerCallback(query.id, `🔄 Обновлено`);
+    return;
+  }
+
+  if (data === 'toggle_all_categories') {
+    const user = await getUser(fromId);
+    const allCategories = await getAllCategories();
+    const selectAll = (user?.selected_categories || []).length !== allCategories.length;
     
-    // Убираем кнопки
+    await setAllCategories(fromId, selectAll);
+    await showCategoriesWithMultiSelect(message.chat.id, message.message_id);
+    await answerCallback(query.id, selectAll ? '✅ Все выбраны' : '🔲 Все сняты');
+    return;
+  }
+
+  if (data === 'confirm_categories') {
+    const user = await getUser(fromId);
+    const count = user?.selected_categories?.length || 0;
+    
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -321,12 +373,13 @@ async function handleCallback(query) {
       })
     });
 
-    await answerCallback(query.id, `✅ Категория "${category}" выбрана`);
-    await sendMessage(message.chat.id, `✅ Категория "${category}" сохранена. Теперь можете использовать /goods`);
+    await sendMessage(message.chat.id, 
+      `✅ Выбрано категорий: ${count}\n\nТеперь можете использовать /goods для просмотра товаров из выбранных категорий.`
+    );
+    await answerCallback(query.id, '✅ Выбор сохранён');
     return;
   }
 
-  // Дальше только админские кнопки
   if (fromId != ADMIN_CHAT_ID) {
     await answerCallback(query.id, '⛔ Нет прав');
     return;
@@ -413,7 +466,7 @@ export async function handleTelegramUpdate(update) {
 export function setupBotEndpoints(app, authenticateToken) {
   app.get('/api/telegram/users', authenticateToken, async (req, res) => {
     const users = await db.execute(`
-      SELECT telegram_id, username, first_name, last_name, status, selected_category,
+      SELECT telegram_id, username, first_name, last_name, status, selected_categories,
              requested_at, approved_at, approved_by
       FROM telegram_users
       ORDER BY 
@@ -476,7 +529,7 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice, chang
   const emoji = change < 0 ? '🔻' : '📈';
   const sign = change > 0 ? '+' : '';
   
-  const link = product.link ? `\n<a href="${product.link}">🔗 Ссылка</a>` : '';
+  const link = product.link ? `\n<a href="https://www.21vek.by${product.link}">🔗 Ссылка</a>` : '';
 
   return `
 <b>${emoji} Цена ${changeType}!</b>
