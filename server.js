@@ -400,7 +400,7 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// --- ЭНДПОИНТ: Получить данные для таблицы (с историей) ---
+// --- ЭНДПОИНТ: Получить данные для таблицы (актуальные цены + история) ---
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
     // Получаем все уникальные даты за последние 90 дней
@@ -413,8 +413,8 @@ app.get('/api/products', authenticateToken, async (req, res) => {
 
     const dateColumns = datesResult.rows.map(row => row.update_date);
 
-    // Получаем все товары с их ценами из price_history
-    const productsResult = await db.execute(`
+    // Получаем все товары и все их цены из price_history
+    const historyResult = await db.execute(`
       SELECT 
         p.code,
         p.name,
@@ -429,8 +429,9 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       ORDER BY p.name, ph.updated_at DESC
     `);
 
+    // Группируем по товарам
     const products = {};
-    productsResult.rows.forEach(row => {
+    historyResult.rows.forEach(row => {
       if (!products[row.code]) {
         products[row.code] = {
           code: row.code,
@@ -438,15 +439,31 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           link: row.link,
           category: row.category,
           brand: row.brand,
-          prices: {}
+          prices: {},
+          // Добавляем поле с последней ценой для сортировки
+          currentPrice: null
         };
       }
       if (row.update_date) {
         products[row.code].prices[row.update_date] = row.price;
+        // Если это самая новая дата, запоминаем как текущую цену
+        if (dateColumns[0] === row.update_date) {
+          products[row.code].currentPrice = row.price;
+        }
       }
     });
 
-    res.json({ dates: dateColumns, products: Object.values(products) });
+    // Преобразуем в массив, добавляем поле для сортировки
+    const productsArray = Object.values(products).map(p => ({
+      ...p,
+      // Используем currentPrice для сортировки по цене
+      price: p.currentPrice
+    }));
+
+    res.json({ 
+      dates: dateColumns, 
+      products: productsArray 
+    });
 
   } catch (err) {
     console.error('Ошибка в /api/products:', err);
