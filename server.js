@@ -1,4 +1,4 @@
-// server.js - Полный код с фильтрацией только изменений цен
+// server.js - Полный код с Telegram ботом и модерацией пользователей
 import express from 'express';
 import { createClient } from '@libsql/client';
 import path from 'path';
@@ -13,8 +13,24 @@ import {
 } from './telegram.js';
 import { handleTelegramUpdate } from './telegramBot.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// ==================== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====================
+const TURSO_URL = process.env.TURSO_URL;
+const TURSO_TOKEN = process.env.TURSO_TOKEN;
+const MY_SECRET_KEY = process.env.SECRET_KEY;
+const JWT_SECRET = process.env.JWT_SECRET;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+if (!JWT_SECRET) {
+  console.error('❌ FATAL: JWT_SECRET не задан в переменных окружения!');
+  process.exit(1);
+}
 
 // Проверка настроек Telegram
 const isTelegramConfigured = () => {
@@ -26,62 +42,9 @@ if (!isTelegramConfigured()) {
   console.log('   Установите TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID для включения уведомлений.');
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// ==================== MIDDLEWARE ====================
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Эндпоинт для вебхука Telegram
-app.post('/api/telegram/webhook', async (req, res) => {
-  try {
-    const update = req.body;
-    console.log('📩 Получено обновление от Telegram:', update.update_id);
-    
-    // Обрабатываем обновление
-    await handleTelegramUpdate(update);
-    
-    res.sendStatus(200);
-  } catch (err) {
-    console.error('❌ Ошибка webhook:', err);
-    res.sendStatus(500);
-  }
-});
-
-// Эндпоинт для установки вебхука (вызвать один раз)
-app.post('/api/telegram/set-webhook', authenticateToken, async (req, res) => {
-  const { url } = req.body;
-  
-  if (!url) {
-    return res.status(400).json({ error: 'URL обязателен' });
-  }
-
-  try {
-    const webhookUrl = `${url}/api/telegram/webhook`;
-    const response = await fetch(
-      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/setWebhook?url=${webhookUrl}`
-    );
-    const data = await response.json();
-    
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Для отладки можно получить информацию о вебхуке
-app.get('/api/telegram/webhook-info', authenticateToken, async (req, res) => {
-  try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getWebhookInfo`
-    );
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-// --- CORS ---
+// CORS middleware (ДО ВСЕХ ЭНДПОИНТОВ)
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'https://price-hunter-bel.vercel.app');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -95,18 +58,25 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.static('public'));
 
-// --- Переменные окружения ---
-const TURSO_URL = process.env.TURSO_URL;
-const TURSO_TOKEN = process.env.TURSO_TOKEN;
-const MY_SECRET_KEY = process.env.SECRET_KEY;
-const JWT_SECRET = process.env.JWT_SECRET;
+// Middleware для проверки JWT (определяем ДО использования)
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
-if (!JWT_SECRET) {
-  console.error('❌ FATAL: JWT_SECRET не задан в переменных окружения!');
-  process.exit(1);
-}
+  if (!token) {
+    return res.status(401).json({ error: 'Требуется авторизация' });
+  }
 
-// --- Подключение к Turso ---
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Недействительный токен' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// ==================== ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ====================
 let db;
 try {
   db = createClient({
@@ -119,18 +89,17 @@ try {
   process.exit(1);
 }
 
-// --- Валидация кода товара ---
+// ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function validateProductCode(code) {
   return /^\d{1,12}$/.test(code);
 }
 
-// --- Валидация email ---
 function validateEmail(email) {
   const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return re.test(email);
 }
 
-// --- Инициализация таблиц ---
+// ==================== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ====================
 async function initTables() {
   try {
     await db.execute(`
@@ -179,6 +148,7 @@ async function initTables() {
         brand TEXT
       )
     `);
+    
     await db.execute(`
       CREATE TABLE IF NOT EXISTS telegram_users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -186,13 +156,13 @@ async function initTables() {
         username TEXT,
         first_name TEXT,
         last_name TEXT,
-        status TEXT DEFAULT 'pending', -- 'pending', 'approved', 'rejected', 'blocked'
+        status TEXT DEFAULT 'pending',
         requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         approved_at DATETIME,
         approved_by TEXT,
-        chat_id INTEGER -- сохраняем chat_id для ответа
-        )
-`    );
+        chat_id INTEGER
+      )
+    `);
     
     console.log('✅ Все таблицы инициализированы');
   } catch (err) {
@@ -202,23 +172,85 @@ async function initTables() {
 
 initTables();
 
-// --- Middleware для проверки JWT ---
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+// ==================== TELEGRAM WEBHOOK ЭНДПОИНТЫ ====================
 
-  if (!token) {
-    return res.status(401).json({ error: 'Требуется авторизация' });
+// Публичный эндпоинт для приема обновлений от Telegram
+app.post('/api/telegram/webhook', async (req, res) => {
+  try {
+    const update = req.body;
+    console.log('📩 Получено обновление от Telegram:', update.update_id);
+    
+    // Обрабатываем обновление
+    await handleTelegramUpdate(update);
+    
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('❌ Ошибка webhook:', err);
+    res.sendStatus(500);
+  }
+});
+
+// Защищенный эндпоинт для установки вебхука
+app.post('/api/telegram/set-webhook', authenticateToken, async (req, res) => {
+  const { url } = req.body;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'URL обязателен' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ error: 'Недействительный токен' });
-    }
-    req.user = user;
-    next();
-  });
-};
+  try {
+    const webhookUrl = `${url}/api/telegram/webhook`;
+    const response = await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${webhookUrl}`
+    );
+    const data = await response.json();
+    
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Защищенный эндпоинт для получения информации о вебхуке
+app.get('/api/telegram/webhook-info', authenticateToken, async (req, res) => {
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo`
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Защищенный эндпоинт для просмотра пользователей Telegram
+app.get('/api/telegram/users', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT 
+        telegram_id,
+        username,
+        first_name,
+        last_name,
+        status,
+        requested_at,
+        approved_at,
+        approved_by
+      FROM telegram_users 
+      ORDER BY 
+        CASE status
+          WHEN 'pending' THEN 1
+          WHEN 'approved' THEN 2
+          ELSE 3
+        END,
+        requested_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ ====================
 
@@ -350,33 +382,7 @@ app.get('/api/allowed-emails', async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
-// просмотр всех пользователей Telegram
-app.get('/api/telegram/users', authenticateToken, async (req, res) => {
-  try {
-    const result = await db.execute(`
-      SELECT 
-        telegram_id,
-        username,
-        first_name,
-        last_name,
-        status,
-        requested_at,
-        approved_at,
-        approved_by
-      FROM telegram_users 
-      ORDER BY 
-        CASE status
-          WHEN 'pending' THEN 1
-          WHEN 'approved' THEN 2
-          ELSE 3
-        END,
-        requested_at DESC
-    `);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+
 // ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ ====================
 
 app.get('/api/codes', authenticateToken, async (req, res) => {
@@ -490,16 +496,12 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ИСПРАВЛЕННЫЙ ЭНДПОИНТ (СО ВСЕМИ ДАТАМИ) ====================
-
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
-    // Получаем все товары с их информацией
     const productsResult = await db.execute(`
       SELECT * FROM products_info
     `);
 
-    // Получаем всю историю цен за 90 дней (ВСЕ ЗАПИСИ, без фильтрации)
     const historyResult = await db.execute(`
       SELECT 
         product_code,
@@ -510,7 +512,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       ORDER BY product_code, updated_at ASC
     `);
 
-    // Группируем ВСЮ историю по товарам
     const allHistoryByProduct = {};
     
     historyResult.rows.forEach(row => {
@@ -523,7 +524,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       });
     });
 
-    // Получаем все уникальные даты за период
     const datesResult = await db.execute(`
       SELECT DISTINCT DATE(updated_at) as update_date
       FROM price_history
@@ -532,28 +532,22 @@ app.get('/api/products', authenticateToken, async (req, res) => {
     `);
     const allDates = datesResult.rows.map(row => row.update_date);
 
-    // Формируем массив товаров
     const products = productsResult.rows.map(product => {
       const allProductHistory = allHistoryByProduct[product.code] || [];
       
-      // Создаем массив с ценами для каждого дня
       const prices = {};
       
-      // Для каждой даты определяем цену на этот день
       allDates.forEach(date => {
-        // Ищем все записи за этот день
         const dayRecords = allProductHistory.filter(record => 
           record.date.startsWith(date)
         );
         
         if (dayRecords.length > 0) {
-          // Берем последнюю запись за день
           const lastRecord = dayRecords.sort((a, b) => 
             new Date(b.date) - new Date(a.date)
           )[0];
           prices[date] = lastRecord.price;
         } else {
-          // Если записей за день нет, берем последнюю известную цену до этой даты
           const previousRecords = allProductHistory.filter(record => 
             record.date < date
           ).sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -564,7 +558,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
         }
       });
 
-      // Для детальной страницы - только изменения (чтобы не было дубликатов)
       const filteredHistory = [];
       let lastPrice = null;
       
@@ -581,15 +574,15 @@ app.get('/api/products', authenticateToken, async (req, res) => {
         link: product.link,
         category: product.category || 'Товары',
         brand: product.brand || 'Без бренда',
-        prices: prices, // теперь здесь есть цены за ВСЕ дни
-        priceHistory: filteredHistory, // только изменения для детальной страницы
+        prices: prices,
+        priceHistory: filteredHistory,
         currentPrice: product.last_price,
         lastUpdate: product.last_update
       };
     });
 
     res.json({ 
-      dates: allDates.reverse(), // сортируем от новых к старым для таблицы
+      dates: allDates.reverse(),
       products: products 
     });
 
@@ -629,7 +622,6 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
 
 // ==================== ФУНКЦИИ ОБНОВЛЕНИЯ ЦЕН ====================
 
-// --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ВСТАВКИ ---
 async function insertPriceRecord(code, name, price, timestamp) {
   await db.execute({
     sql: 'INSERT INTO price_history (product_code, product_name, price, updated_at) VALUES (?, ?, ?, ?)',
@@ -637,12 +629,11 @@ async function insertPriceRecord(code, name, price, timestamp) {
   });
 }
 
-// --- УМНАЯ ФУНКЦИЯ СОХРАНЕНИЯ ДАННЫХ ТОВАРА ---
 async function saveProductData(product, timestamp) {
   const code = product.code.toString();
   const price = parseFloat(product.packPrice || product.price);
   const now = timestamp || new Date();
-  const today = now.toISOString().split('T')[0]; // YYYY-MM-DD
+  const today = now.toISOString().split('T')[0];
 
   let category = 'Товары';
   if (product.categories && product.categories.length > 0) {
@@ -651,7 +642,6 @@ async function saveProductData(product, timestamp) {
   const brand = product.producerName || 'Без бренда';
 
   try {
-    // Получаем последнюю запись для этого товара
     const lastRecord = await db.execute({
       sql: `SELECT price, updated_at FROM price_history 
             WHERE product_code = ? 
@@ -659,7 +649,6 @@ async function saveProductData(product, timestamp) {
       args: [code]
     });
 
-    // Проверяем, есть ли запись за сегодня
     const todayRecord = await db.execute({
       sql: `SELECT id FROM price_history 
             WHERE product_code = ? AND DATE(updated_at) = ? 
@@ -669,13 +658,10 @@ async function saveProductData(product, timestamp) {
 
     const lastPrice = lastRecord.rows[0]?.price;
 
-    // Логика принятия решения
     if (todayRecord.rows.length === 0) {
-      // Нет записи за сегодня - сохраняем всегда (это первая запись дня)
       console.log(`📝 Первая запись за ${today} для ${code}`);
       await insertPriceRecord(code, product.name, price, now);
       
-      // Если это не первая запись вообще (есть lastPrice) - уведомляем
       if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
         const notification = formatPriceChangeNotification(
           { ...product, code }, 
@@ -687,13 +673,10 @@ async function saveProductData(product, timestamp) {
       }
       
     } else {
-      // Запись за сегодня уже есть
       if (Math.abs(price - lastPrice) > 0.01) {
-        // Цена изменилась - сохраняем с точным временем
         console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
         await insertPriceRecord(code, product.name, price, now);
         
-        // ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ В TELEGRAM
         const notification = formatPriceChangeNotification(
           { ...product, code }, 
           lastPrice, 
@@ -702,12 +685,10 @@ async function saveProductData(product, timestamp) {
         await sendTelegramMessage(notification);
         
       } else {
-        // Цена не изменилась - ничего не делаем
         console.log(`⏭️ Цена не изменилась для ${code}, пропускаем`);
       }
     }
 
-    // Обновляем products_info всегда
     await db.execute({
       sql: `
         INSERT INTO products_info (code, name, last_price, link, category, brand, last_update)
@@ -729,7 +710,6 @@ async function saveProductData(product, timestamp) {
   }
 }
 
-// --- Обновление для нового кода ---
 async function updatePricesForNewCode(code) {
   console.log(`🔄 Начинаем обновление для нового кода: ${code}`);
 
@@ -769,7 +749,6 @@ async function updatePricesForNewCode(code) {
   }
 }
 
-// --- Обновление всех цен с пакетной отправкой ---
 async function updateAllPrices() {
   const startTime = Date.now();
   console.log('🚀 Начинаем ускоренное обновление цен:', new Date().toLocaleString());
@@ -798,7 +777,7 @@ async function updateAllPrices() {
     let processedBatches = 0;
     let totalUpdated = 0;
     let totalErrors = 0;
-    let totalNewRecords = 0; // Добавляем счетчик новых записей
+    let totalNewRecords = 0;
 
     const processBatch = async (batch, batchIndex) => {
       const batchNum = batchIndex + 1;
@@ -839,7 +818,6 @@ async function updateAllPrices() {
         
         for (const product of products) {
           try {
-            // Проверяем, будет ли новая запись
             const today = new Date().toISOString().split('T')[0];
             const lastRecord = await db.execute({
               sql: `SELECT price FROM price_history 
@@ -858,7 +836,6 @@ async function updateAllPrices() {
             const currentPrice = parseFloat(product.packPrice || product.price);
             const lastPrice = lastRecord.rows[0]?.price;
             
-            // Если нет записи за сегодня или цена изменилась - будет новая запись
             if (todayRecord.rows.length === 0 || 
                 (lastPrice !== undefined && Math.abs(currentPrice - lastPrice) > 0.01)) {
               batchNewRecords++;
@@ -903,7 +880,6 @@ async function updateAllPrices() {
     console.log('\n🎉 Обновление завершено!');
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
     
-    // ОТПРАВЛЯЕМ ИТОГОВОЕ УВЕДОМЛЕНИЕ
     if (isTelegramConfigured()) {
       const stats = {
         updated: totalUpdated,
@@ -919,7 +895,6 @@ async function updateAllPrices() {
   } catch (error) {
     console.error('❌ Глобальная ошибка при обновлении цен:', error);
     
-    // Уведомление об ошибке
     await sendTelegramMessage(`
 ⚠️ <b>Ошибка при массовом обновлении</b>
 
@@ -930,7 +905,6 @@ ${error.message}
   }
 }
 
-// --- Очистка старых записей ---
 async function cleanOldRecords() {
   console.log('🧹 Очистка записей старше 90 дней...');
   try {
@@ -973,6 +947,7 @@ setTimeout(() => {
   cleanOldRecords();
 }, 10000);
 
+// ==================== ЗАПУСК СЕРВЕРА ====================
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
 });
