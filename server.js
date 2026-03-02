@@ -12,6 +12,19 @@ import {
   sendBatchUpdateNotification 
 } from './telegram.js';
 
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// Проверка настроек Telegram
+const isTelegramConfigured = () => {
+  return TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID;
+};
+
+if (!isTelegramConfigured()) {
+  console.log('⚠️ Telegram бот не настроен. Уведомления отключены.');
+  console.log('   Установите TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID для включения уведомлений.');
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
