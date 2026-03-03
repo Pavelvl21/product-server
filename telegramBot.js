@@ -201,12 +201,44 @@ async function getProductsByCategory(category) {
 
 // ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ КАК НА ФРОНТЕ ====================
 
+// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ КАК НА ФРОНТЕ ====================
+
 async function getChangesLikeFrontend() {
   try {
     const today = new Date().toISOString().split('T')[0];
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     
-    console.log(`📅 Сравниваем ${today} с ${yesterday}`);
+    console.log('📅 ===== НАЧАЛО ЛОГИРОВАНИЯ =====');
+    console.log(`📅 Сегодня: ${today}`);
+    console.log(`📅 Вчера: ${yesterday}`);
+    
+    // Сначала проверим конкретный товар 10012 напрямую
+    console.log('\n🔍 ПРОВЕРКА ТОВАРА 10012:');
+    
+    // Проверяем products_info
+    const productInfo = await db.execute({
+      sql: 'SELECT * FROM products_info WHERE code = ?',
+      args: ['10012']
+    });
+    console.log('📦 products_info для 10012:', JSON.stringify(productInfo.rows[0], null, 2));
+    
+    // Проверяем записи в price_history за последние 3 дня
+    const priceHistory = await db.execute({
+      sql: `
+        SELECT DATE(updated_at) as date, price, updated_at
+        FROM price_history 
+        WHERE product_code = ? AND updated_at >= datetime('now', '-3 days')
+        ORDER BY updated_at DESC
+      `,
+      args: ['10012']
+    });
+    console.log('📜 price_history для 10012:');
+    priceHistory.rows.forEach(row => {
+      console.log(`   ${row.date}: ${row.price} (${row.updated_at})`);
+    });
+    
+    // Теперь выполняем основной запрос
+    console.log('\n🔍 ВЫПОЛНЕНИЕ ОСНОВНОГО ЗАПРОСА:');
     
     const result = await db.execute({
       sql: `
@@ -229,7 +261,20 @@ async function getChangesLikeFrontend() {
       args: [today, yesterday]
     });
     
-    console.log(`📊 Найдено товаров: ${result.rows.length}`);
+    console.log(`📊 Всего товаров в результате: ${result.rows.length}`);
+    
+    // Найдем товар 10012 в результате
+    const product10012 = result.rows.find(row => row.code === '10012');
+    if (product10012) {
+      console.log('\n🔍 ТОВАР 10012 В РЕЗУЛЬТАТЕ:');
+      console.log(`   code: ${product10012.code}`);
+      console.log(`   name: ${product10012.name}`);
+      console.log(`   price_today: ${product10012.price_today} (за ${today})`);
+      console.log(`   price_yesterday: ${product10012.price_yesterday} (за ${yesterday})`);
+      console.log(`   packPrice: ${product10012.packPrice}`);
+    } else {
+      console.log('\n❌ Товар 10012 НЕ НАЙДЕН в результате запроса');
+    }
     
     const changes = result.rows
       .filter(row => row.price_today && row.price_yesterday)
@@ -256,12 +301,17 @@ async function getChangesLikeFrontend() {
       .filter(row => Math.abs(row.change) > 0.01)
       .sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
     
-    console.log(`✅ Изменений найдено: ${changes.length}`);
+    console.log(`\n✅ Изменений после фильтрации: ${changes.length}`);
     
-    // Для отладки выведем первые 3 изменения
-    changes.slice(0, 3).forEach(c => {
-      console.log(`${c.product_code}: ${c.previous_price} → ${c.current_price} (${c.change})`);
+    // Выведем первые 3 изменения для проверки
+    changes.slice(0, 3).forEach((c, i) => {
+      console.log(`\n📊 Изменение ${i+1}:`);
+      console.log(`   Товар: ${c.product_code} - ${c.product_name}`);
+      console.log(`   Цены: ${c.previous_price} → ${c.current_price}`);
+      console.log(`   Изменение: ${c.change} (${c.percent}%)`);
     });
+    
+    console.log('📅 ===== КОНЕЦ ЛОГИРОВАНИЯ =====\n');
     
     return changes;
   } catch (err) {
