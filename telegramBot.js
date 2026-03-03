@@ -253,6 +253,11 @@ async function showAddCategories(chatId) {
       buttons.push(row);
     }
 
+    // Если все категории уже выбраны
+    if (buttons.length === 0 || (buttons.length === 1 && buttons[0].length === 0)) {
+      buttons.length = 0;
+    }
+
     buttons.push([{
       text: '✅ Готово',
       callback_data: 'done_adding'
@@ -289,16 +294,12 @@ async function showActiveCategories(chatId) {
     }
 
     const buttons = [];
-    const row = [];
     
     selectedCategories.forEach((cat, index) => {
-      row.push({
+      buttons.push([{
         text: `❌ ${cat}`,
         callback_data: `remove_${index}_${cat}`
-      });
-      
-      buttons.push([...row]);
-      row.length = 0;
+      }]);
     });
 
     buttons.push([{
@@ -330,25 +331,24 @@ function formatProductSimple(product) {
 }
 
 function formatProductFull(product, oldPrice = null, newPrice = null, change = null, percent = null) {
-  // Определяем эмодзи и цвет HTML
+  // Определяем эмодзи (цвета через HTML не работают в Telegram)
   let changeEmoji = '🆕';
   let priceChangeHtml = '';
   
   if (oldPrice && newPrice) {
     if (Math.abs(newPrice - oldPrice) < 0.01) {
-      // Цена не изменилась (такое не должно попадать сюда, но на всякий случай)
+      // Цена не изменилась
       priceChangeHtml = `\n💰 <b>Цена:</b> ${formatPrice(newPrice)} руб.`;
     } else {
-      // Цена изменилась
+      // Цена изменилась - используем только эмодзи для обозначения направления
       const isDecrease = newPrice < oldPrice;
-      const color = isDecrease ? '#FF0000' : '#00FF00'; // красный для снижения, зеленый для повышения
       const arrow = isDecrease ? '▼' : '▲';
       const sign = isDecrease ? '' : '+';
       
       changeEmoji = isDecrease ? '🔻' : '📈';
       
       priceChangeHtml = `\n💰 <b>Было:</b> ${formatPrice(oldPrice)} руб.` +
-        `\n💰 <b style="color:${color};">Стало: ${formatPrice(newPrice)} руб. ${arrow} ${sign}${change} (${sign}${percent}%)</b>`;
+        `\n💰 <b>Стало:</b> ${formatPrice(newPrice)} руб. ${arrow} ${sign}${change} (${sign}${percent}%)`;
     }
   } else {
     // Нет сравнения - просто показываем текущую цену
@@ -398,6 +398,8 @@ async function handleMessage(message) {
     const username = message.from.username;
     const firstName = message.from.first_name;
     const lastName = message.from.last_name;
+
+    console.log(`📨 Обработка команды: ${text} от ${userId}`);
 
     const user = await getUser(userId);
 
@@ -458,6 +460,8 @@ async function handleMessage(message) {
     } else if (text === '/goods') {
       const selectedCategories = user?.selected_categories || [];
       
+      console.log(`📦 /goods: выбранные категории ${JSON.stringify(selectedCategories)}`);
+      
       if (selectedCategories.length === 0) {
         await sendMessage(chatId, '❌ Сначала выберите категории через /add');
         return;
@@ -465,7 +469,9 @@ async function handleMessage(message) {
 
       let allProducts = [];
       for (const category of selectedCategories) {
+        console.log(`🔍 Получение товаров для категории: ${category}`);
         const products = await getProductsByCategory(category);
+        console.log(`📦 Найдено товаров в категории ${category}: ${products.length}`);
         allProducts = [...allProducts, ...products];
       }
       
@@ -478,6 +484,8 @@ async function handleMessage(message) {
       const productList = allProducts
         .map(p => formatProductSimple(p))
         .join('\n');
+
+      console.log(`📤 Отправка списка товаров, длина: ${productList.length}`);
 
       await sendMessage(chatId, 
         `📦 <b>Товары в выбранных категориях (${allProducts.length}):</b>\n\n${productList}`
@@ -523,7 +531,7 @@ async function handleMessage(message) {
       await sendMessage(chatId, '❓ Неизвестная команда. /help');
     }
   } catch (err) {
-    console.error('Ошибка в handleMessage:', err);
+    console.error('❌ Ошибка в handleMessage:', err);
   }
 }
 
