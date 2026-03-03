@@ -159,12 +159,22 @@ async function getProductsByCategory(category) {
 
 async function showCategoriesSimple(chatId) {
   try {
+    console.log('📁 Получаем категории...');
     const categories = await getAllCategories();
+    console.log('📁 Получены категории:', categories);
     
     if (!categories || categories.length === 0) {
+      console.log('📁 Категорий нет, отправляем сообщение');
       await sendMessage(chatId, '📭 В базе пока нет категорий');
       return;
     }
+
+    console.log('📁 Получаем пользователя...');
+    const user = await getUser(chatId);
+    console.log('📁 Пользователь:', user);
+    
+    const selectedCategories = user?.selected_categories || [];
+    console.log('📁 Выбранные категории:', selectedCategories)
 
     const user = await getUser(chatId);
     const selectedCategories = user?.selected_categories || [];
