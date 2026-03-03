@@ -199,11 +199,10 @@ async function getProductsByCategory(category) {
   }
 }
 
-// ==================== НОВАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ЗА ПОСЛЕДНИЕ 24 ЧАСА ====================
+// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ЗА ПОСЛЕДНИЕ 24 ЧАСА ====================
 
 async function getRecentPriceChanges() {
   try {
-    // Упрощенный запрос - исправленный синтаксис
     const result = await db.execute(`
       SELECT 
         ph.product_code,
@@ -247,6 +246,37 @@ async function getRecentPriceChanges() {
     return changes;
   } catch (err) {
     console.error('Ошибка получения изменений:', err);
+    return [];
+  }
+}
+
+// ==================== ТЕСТОВАЯ ФУНКЦИЯ ====================
+
+async function testPriceChanges() {
+  try {
+    // Просто посмотрим все записи за 2 дня
+    const result = await db.execute(`
+      SELECT 
+        ph.product_code,
+        ph.product_name,
+        ph.price,
+        ph.updated_at,
+        pi.last_price
+      FROM price_history ph
+      JOIN products_info pi ON ph.product_code = pi.code
+      WHERE ph.updated_at >= datetime('now', '-2 days')
+      ORDER BY ph.updated_at DESC
+      LIMIT 20
+    `);
+    
+    console.log('Тестовые данные:');
+    result.rows.forEach(row => {
+      console.log(`${row.product_code}: history=${row.price}, info=${row.last_price}, разница=${Math.abs(row.price - row.last_price)}`);
+    });
+    
+    return result.rows;
+  } catch (err) {
+    console.error('Ошибка теста:', err);
     return [];
   }
 }
@@ -447,6 +477,7 @@ async function handleMessage(message) {
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
           '/last - изменения цен за последние 24 часа\n' +
+          '/test - тестовый вывод данных\n' +
           '/help - список всех команд'
         );
       } else if (user.status === 'pending') {
@@ -468,7 +499,8 @@ async function handleMessage(message) {
         '/add - добавить категории для отслеживания\n' +
         '/list - показать выбранные категории\n' +
         '/goods - показать список товаров (только названия)\n' +
-        '/last - показать изменения цен за последние 24 часа'
+        '/last - показать изменения цен за последние 24 часа\n' +
+        '/test - тестовый вывод данных'
       );
     } else if (text === '/status') {
       const categories = user.selected_categories || [];
@@ -552,6 +584,13 @@ async function handleMessage(message) {
         await sendMessage(chatId, message);
         await new Promise(resolve => setTimeout(resolve, 100));
       }
+    } else if (text === '/test') {
+      const testData = await testPriceChanges();
+      let msg = '📊 <b>Тестовые данные (первые 20 записей):</b>\n\n';
+      testData.forEach(row => {
+        msg += `<code>${row.product_code}</code>: ${row.price} vs ${row.last_price} (${Math.abs(row.price - row.last_price).toFixed(2)})\n`;
+      });
+      await sendMessage(chatId, msg);
     } else {
       await sendMessage(chatId, '❓ Неизвестная команда. /help');
     }
@@ -668,6 +707,7 @@ async function handleCallback(query) {
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
           '/last - изменения цен за последние 24 часа\n' +
+          '/test - тестовый вывод данных\n' +
           '/help - список всех команд'
         );
         await answerCallback(query.id, '✅ Подтверждено');
