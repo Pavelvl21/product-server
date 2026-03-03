@@ -65,21 +65,22 @@ export async function initTables() {
       )
     `);
     
-    await db.execute(`
-      CREATE TABLE IF NOT EXISTS telegram_users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id INTEGER UNIQUE NOT NULL,
-        username TEXT,
-        first_name TEXT,
-        last_name TEXT,
-        status TEXT DEFAULT 'pending',
-        requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        approved_at DATETIME,
-        approved_by TEXT,
-        chat_id INTEGER,
-        selected_categories TEXT DEFAULT '[]'
-      )
-    `);
+await db.execute(`
+  CREATE TABLE IF NOT EXISTS telegram_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER UNIQUE NOT NULL,
+    username TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    status TEXT DEFAULT 'pending',
+    requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    approved_at DATETIME,
+    approved_by TEXT,
+    chat_id INTEGER,
+    selected_categories TEXT DEFAULT '[]',
+    email TEXT
+  )
+`);
     
     console.log('✅ Все таблицы инициализированы');
   } catch (err) {
