@@ -157,7 +157,42 @@ async function getProductsByCategory(category) {
   }
 }
 
-// ==================== НОВАЯ ФУНКЦИЯ ПОКАЗА КАТЕГОРИЙ ДЛЯ ДОБАВЛЕНИЯ ====================
+// ==================== НОВАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ЗА СЕГОДНЯ ====================
+
+async function getTodayPriceChanges() {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    
+    const result = await db.execute({
+      sql: `
+        SELECT 
+          ph.product_code,
+          ph.product_name,
+          ph.price as new_price,
+          ph.updated_at,
+          pi.last_price as old_price,
+          pi.packPrice,
+          pi.monthly_payment,
+          pi.no_overpayment_max_months,
+          pi.link,
+          pi.category,
+          pi.brand
+        FROM price_history ph
+        JOIN products_info pi ON ph.product_code = pi.code
+        WHERE DATE(ph.updated_at) = ?
+        ORDER BY ph.updated_at DESC
+      `,
+      args: [today]
+    });
+    
+    return result.rows;
+  } catch (err) {
+    console.error('Ошибка получения изменений за сегодня:', err);
+    return [];
+  }
+}
+
+// ==================== ФУНКЦИИ ПОКАЗА КАТЕГОРИЙ ====================
 
 async function showAddCategories(chatId) {
   try {
@@ -176,7 +211,6 @@ async function showAddCategories(chatId) {
     const row = [];
     
     categories.forEach((cat, index) => {
-      // Пропускаем уже выбранные категории
       if (selectedCategories.includes(cat)) return;
       
       row.push({
@@ -184,19 +218,16 @@ async function showAddCategories(chatId) {
         callback_data: `add_${index}_${cat}`
       });
       
-      // По 2 кнопки в ряд
       if (row.length === 2) {
         buttons.push([...row]);
         row.length = 0;
       }
     });
     
-    // Добавляем оставшиеся кнопки
     if (row.length > 0) {
       buttons.push(row);
     }
 
-    // Кнопка готово
     buttons.push([{
       text: '✅ Готово',
       callback_data: 'done_adding'
@@ -219,8 +250,6 @@ async function showAddCategories(chatId) {
   }
 }
 
-// ==================== НОВАЯ ФУНКЦИЯ ПОКАЗА АКТИВНЫХ КАТЕГОРИЙ ====================
-
 async function showActiveCategories(chatId) {
   try {
     const user = await getUser(chatId);
@@ -234,7 +263,6 @@ async function showActiveCategories(chatId) {
       return;
     }
 
-    // Создаем кнопки для удаления категорий
     const buttons = [];
     const row = [];
     
@@ -244,7 +272,6 @@ async function showActiveCategories(chatId) {
         callback_data: `remove_${index}_${cat}`
       });
       
-      // По 1 кнопке в ряд для удобства
       buttons.push([...row]);
       row.length = 0;
     });
@@ -265,6 +292,36 @@ async function showActiveCategories(chatId) {
   } catch (err) {
     console.error('Ошибка в showActiveCategories:', err);
   }
+}
+
+// ==================== ФУНКЦИИ ФОРМАТИРОВАНИЯ ====================
+
+function formatPrice(price) {
+  return price ? price.toFixed(2).replace('.', ',') : '—';
+}
+
+function formatProductSimple(product) {
+  return `• ${product.name}`;
+}
+
+function formatProductFull(product, oldPrice = null, newPrice = null) {
+  const changeEmoji = newPrice && oldPrice 
+    ? (newPrice < oldPrice ? '🔻' : '📈')
+    : '🆕';
+  
+  const changeText = oldPrice && newPrice
+    ? `\n💰 <b>Было:</b> ${formatPrice(oldPrice)} руб.\n💰 <b>Стало:</b> ${formatPrice(newPrice)} руб.`
+    : `\n💰 <b>Цена:</b> ${formatPrice(product.last_price)} руб.`;
+
+  return `
+${changeEmoji} <b>${product.name}</b>
+📋 Код: <code>${product.code}</code>${changeText}
+💳 Рассрочка: ${formatPrice(product.packPrice)} руб.
+📆 Платеж: ${product.monthly_payment || '—'} руб./мес
+⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
+🏷 Категория: ${product.category || '—'}
+🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
+`;
 }
 
 // ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
@@ -317,7 +374,8 @@ async function handleMessage(message) {
           '📋 <b>Команды:</b>\n' +
           '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
-          '/goods - показать товары из выбранных категорий\n' +
+          '/goods - показать список товаров\n' +
+          '/last - изменения цен за сегодня\n' +
           '/help - список всех команд'
         );
       } else if (user.status === 'pending') {
@@ -338,7 +396,8 @@ async function handleMessage(message) {
         '/status - проверить статус\n' +
         '/add - добавить категории для отслеживания\n' +
         '/list - показать выбранные категории\n' +
-        '/goods - показать товары из выбранных категорий'
+        '/goods - показать список товаров (только названия)\n' +
+        '/last - показать изменения цен за сегодня'
       );
     } else if (text === '/status') {
       const categories = user.selected_categories || [];
@@ -373,28 +432,47 @@ async function handleMessage(message) {
         return;
       }
 
-      await sendMessage(chatId, `📦 Найдено товаров: ${allProducts.length}\nОтправляю список...`);
+      // Простой список товаров (только названия)
+      const productList = allProducts
+        .map(p => formatProductSimple(p))
+        .join('\n');
 
-      for (const product of allProducts) {
-        const formatPrice = (price) => {
-          return price ? price.toFixed(2).replace('.', ',') : '—';
+      await sendMessage(chatId, 
+        `📦 <b>Товары в выбранных категориях (${allProducts.length}):</b>\n\n${productList}`
+      );
+    } else if (text === '/last') {
+      const changes = await getTodayPriceChanges();
+      
+      if (changes.length === 0) {
+        await sendMessage(chatId, '📭 За сегодня изменений цен не было');
+        return;
+      }
+
+      await sendMessage(chatId, 
+        `📊 <b>Изменения цен за сегодня (${changes.length}):</b>\n\n`
+      );
+
+      // Отправляем каждое изменение отдельным сообщением
+      for (const change of changes) {
+        const product = {
+          name: change.product_name,
+          code: change.product_code,
+          last_price: change.old_price,
+          packPrice: change.packPrice,
+          monthly_payment: change.monthly_payment,
+          no_overpayment_max_months: change.no_overpayment_max_months,
+          link: change.link,
+          category: change.category,
+          brand: change.brand
         };
 
-        const fullLink = product.link 
-          ? `https://www.21vek.by${product.link}` 
-          : null;
-          
-        const productText = `
-🛍 <b>${product.name}</b>
+        const message = formatProductFull(
+          product, 
+          change.old_price, 
+          change.new_price
+        );
 
-📋 Код товара: <code>${product.code}</code>
-💰 <b>РЦ: ${formatPrice(product.last_price)} руб.</b>
-💳 Цена в рассрочку: ${formatPrice(product.packPrice)} руб.
-📆 Платеж: ${product.monthly_payment || '—'} руб./мес
-⏱ Рассрочка: ${product.no_overpayment_max_months || '—'} мес.
-${fullLink ? `🔗 <a href="${fullLink}">Ссылка на товар</a>` : ''}
-`;
-        await sendMessage(chatId, productText);
+        await sendMessage(chatId, message);
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     } else {
@@ -419,14 +497,11 @@ async function handleCallback(query) {
     if (data.startsWith('add_')) {
       const parts = data.split('_');
       const index = parseInt(parts[1]);
-      // Восстанавливаем категорию (она могла содержать пробелы)
       const category = parts.slice(2).join('_');
       
-      const categories = await getAllCategories();
       const user = await getUser(fromId);
       const selectedCategories = user?.selected_categories || [];
       
-      // Добавляем категорию, если её ещё нет
       if (!selectedCategories.includes(category)) {
         selectedCategories.push(category);
         await updateUserCategories(fromId, selectedCategories);
@@ -435,7 +510,6 @@ async function handleCallback(query) {
         await answerCallback(query.id, `⚠️ Уже добавлена`);
       }
       
-      // Показываем обновленный список
       await showAddCategories(message.chat.id);
       return;
     }
@@ -444,19 +518,16 @@ async function handleCallback(query) {
     if (data.startsWith('remove_')) {
       const parts = data.split('_');
       const index = parseInt(parts[1]);
-      // Восстанавливаем категорию
       const category = parts.slice(2).join('_');
       
       const user = await getUser(fromId);
       const selectedCategories = user?.selected_categories || [];
       
-      // Удаляем категорию
       const newCategories = selectedCategories.filter(c => c !== category);
       await updateUserCategories(fromId, newCategories);
       
       await answerCallback(query.id, `❌ ${category} удалена`);
       
-      // Показываем обновленный список
       await showActiveCategories(message.chat.id);
       return;
     }
@@ -475,7 +546,6 @@ async function handleCallback(query) {
       
       await answerCallback(query.id, `✅ Выбрано: ${count}`);
       
-      // Убираем клавиатуру
       await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -489,7 +559,8 @@ async function handleCallback(query) {
       await sendMessage(message.chat.id, 
         `✅ Выбрано категорий: ${count}\n\n` +
         `Используйте /list чтобы увидеть список\n` +
-        `/goods для просмотра товаров.`
+        `/goods для просмотра товаров\n` +
+        `/last для просмотра изменений за сегодня.`
       );
       return;
     }
@@ -524,7 +595,8 @@ async function handleCallback(query) {
           '📋 <b>Команды:</b>\n' +
           '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
-          '/goods - показать товары из выбранных категорий\n' +
+          '/goods - показать список товаров\n' +
+          '/last - изменения цен за сегодня\n' +
           '/help - список всех команд'
         );
         await answerCallback(query.id, '✅ Подтверждено');
@@ -580,7 +652,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Если ничего не подошло
     await answerCallback(query.id, '❓ Неизвестная команда');
     
   } catch (err) {
@@ -684,23 +755,6 @@ export async function sendTelegramMessage(message) {
 }
 
 export function formatPriceChangeNotification(product, oldPrice, newPrice, changeType = 'изменилась') {
-  const change = newPrice - oldPrice;
-  const percent = ((change / oldPrice) * 100).toFixed(1);
-  const emoji = change < 0 ? '🔻' : '📈';
-  const sign = change > 0 ? '+' : '';
-  
-  const link = product.link ? `\n<a href="https://www.21vek.by${product.link}">🔗 Ссылка</a>` : '';
-
-  return `
-<b>${emoji} Цена ${changeType}!</b>
-
-<b>${product.name}</b>
-Код: <code>${product.code}</code>
-
-Старая: ${oldPrice.toFixed(2)} руб.
-Новая: ${newPrice.toFixed(2)} руб.
-Изменение: ${sign}${change.toFixed(2)} руб. (${sign}${percent}%)${link}
-
-🕐 ${new Date().toLocaleString('ru-RU')}
-`;
+  // Используем ту же функцию форматирования, что и для /last
+  return formatProductFull(product, oldPrice, newPrice);
 }
