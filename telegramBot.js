@@ -347,7 +347,10 @@ async function showActiveCategories(chatId, user) {
 // ==================== ФУНКЦИИ ФОРМАТИРОВАНИЯ ====================
 
 function formatPrice(price) {
-  return price ? price.toFixed(2).replace('.', ',') : '—';
+  if (price === null || price === undefined) return '—';
+  // Используем toFixed(2) и replace, но сохраняем знак минуса если он есть
+  const formatted = price.toFixed(2).replace('.', ',');
+  return formatted; // вернется например "-281,67" или "+40,67"
 }
 
 function formatProductSimple(product) {
@@ -355,14 +358,14 @@ function formatProductSimple(product) {
 }
 
 function formatProductFull(product) {
-  const sign = product.isDecrease ? '' : '+';
   const circleEmoji = product.isDecrease ? '🔴' : '🟢';
+  const changeValue = product.change; // теперь это число со знаком (+ или -)
   
   return `
 ${circleEmoji} <b>${product.product_name}</b>
 📋 Код: <code>${product.product_code}</code>
 💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
-💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${sign}${formatPrice(Math.abs(product.change))} (${sign}${product.percent}%)
+💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(changeValue)} (${product.percent}%)
 💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
 📆 Платеж: ${product.monthly_payment || '—'} руб./мес
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
