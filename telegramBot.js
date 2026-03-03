@@ -6,6 +6,9 @@ const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const SECRET_KEY = process.env.SECRET_KEY;
 const API_URL = process.env.API_URL || 'http://localhost:3000';
 
+// Хранилище для rate limiting в боте
+const userLastCommand = new Map();
+
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
 async function sendMessage(chatId, text, options = {}) {
@@ -49,218 +52,41 @@ async function answerCallback(callbackId, text) {
   }
 }
 
-// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ДАННЫХ С СЕРВЕРА ====================
-
-async function getProductsFromServer() {
-  try {
-    const response = await fetch(`${API_URL}/api/bot/products`, {
-      headers: {
-        'x-bot-key': SECRET_KEY
-      }
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    return data;
-  } catch (err) {
-    console.error('Ошибка получения данных с сервера:', err);
-    return null;
-  }
-}
-
-// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ====================
-
-async function getPriceChanges() {
-  const data = await getProductsFromServer();
+// Rate limiting для команд бота
+function checkRateLimit(userId, command) {
+  const key = `${userId}_${command}`;
+  const now = Date.now();
+  const lastTime = userLastCommand.get(key) || 0;
   
-  if (!data || !data.products) {
-    return [];
+  // Разные лимиты для разных команд
+  const limits = {
+    '/changes': 10000, // 10 секунд
+    '/goods': 5000,    // 5 секунд
+    '/add': 2000,      // 2 секунды
+    '/list': 2000,     // 2 секунды
+    '/status': 2000,   // 2 секунды
+    'default': 1000    // 1 секунда
+  };
+  
+  const limit = limits[command] || limits.default;
+  
+  if (now - lastTime < limit) {
+    return false;
   }
   
-  const changes = data.products
-    .filter(p => p.priceToday && p.priceYesterday && 
-                Math.abs(p.priceToday - p.priceYesterday) > 0.01)
-    .map(p => {
-      const change = p.priceToday - p.priceYesterday;
-      return {
-        product_code: p.code,
-        product_name: p.name,
-        current_price: p.priceToday,
-        previous_price: p.priceYesterday,
-        change: change,
-        percent: (change / p.priceYesterday * 100).toFixed(1),
-        packPrice: p.packPrice,
-        monthly_payment: p.monthly_payment,
-        no_overpayment_max_months: p.no_overpayment_max_months,
-        link: p.link,
-        category: p.category,
-        brand: p.brand,
-        isDecrease: change < 0
-      };
-    })
-    .sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+  userLastCommand.set(key, now);
   
-  return changes;
-}
-
-// ==================== ФУНКЦИИ ФОРМАТИРОВАНИЯ ====================
-
-function formatPrice(price) {
-  return price ? price.toFixed(2).replace('.', ',') : '—';
-}
-
-function formatProductSimple(product) {
-  return `• ${product.name}`;
-}
-
-function formatProductFull(product) {
-  const sign = product.isDecrease ? '' : '+';
-  const circleEmoji = product.isDecrease ? '🔴' : '🟢';
-  
-  return `
-${circleEmoji} <b>${product.product_name}</b>
-📋 Код: <code>${product.product_code}</code>
-💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
-💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${sign}${formatPrice(Math.abs(product.change))} (${sign}${product.percent}%)
-💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
-📆 Платеж: ${product.monthly_payment || '—'} руб./мес
-⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
-🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
-`;
-}
-
-// ==================== ФУНКЦИИ ДЛЯ КАТЕГОРИЙ ====================
-
-async function getAllCategories() {
-  const data = await getProductsFromServer();
-  if (!data || !data.products) return [];
-  
-  const categories = [...new Set(data.products.map(p => p.category || 'Без категории'))];
-  return categories.sort();
-}
-
-async function getProductsByCategory(category) {
-  const data = await getProductsFromServer();
-  if (!data || !data.products) return [];
-  
-  return data.products
-    .filter(p => p.category === category)
-    .map(p => ({
-      code: p.code,
-      name: p.name,
-      last_price: p.priceToday || p.packPrice,
-      packPrice: p.packPrice,
-      monthly_payment: p.monthly_payment,
-      no_overpayment_max_months: p.no_overpayment_max_months,
-      link: p.link
-    }));
-}
-
-// ==================== ФУНКЦИИ ПОКАЗА КАТЕГОРИЙ ====================
-
-async function showAddCategories(chatId) {
-  try {
-    const categories = await getAllCategories();
-    
-    if (!categories || categories.length === 0) {
-      await sendMessage(chatId, '📭 В базе пока нет категорий');
-      return;
-    }
-
-    const user = await getUser(chatId);
-    const selectedCategories = user?.selected_categories || [];
-
-    const buttons = [];
-    const row = [];
-    
-    categories.forEach((cat, index) => {
-      if (selectedCategories.includes(cat)) return;
-      
-      row.push({
-        text: cat,
-        callback_data: `add_${index}_${cat}`
-      });
-      
-      if (row.length === 2) {
-        buttons.push([...row]);
-        row.length = 0;
-      }
-    });
-    
-    if (row.length > 0) {
-      buttons.push(row);
-    }
-
-    if (buttons.length === 0 || (buttons.length === 1 && buttons[0].length === 0)) {
-      buttons.length = 0;
-    }
-
-    buttons.push([{
-      text: '✅ Готово',
-      callback_data: 'done_adding'
-    }]);
-
-    const selectedText = selectedCategories.length > 0 
-      ? `\n\n<b>Выбранные категории:</b>\n${selectedCategories.map(c => `✅ ${c}`).join('\n')}` 
-      : '\n\n⚠️ Пока не выбрано ни одной категории';
-
-    await sendMessage(chatId, 
-      `📁 <b>Добавление категорий</b>\n` +
-      `Нажмите на категорию, чтобы добавить её в список отслеживания.${selectedText}`, 
-      { 
-        reply_markup: { inline_keyboard: buttons },
-        parse_mode: 'HTML'
-      }
-    );
-  } catch (err) {
-    console.error('Ошибка в showAddCategories:', err);
+  // Очистка старых записей
+  if (userLastCommand.size > 1000) {
+    const oldKeys = [...userLastCommand.keys()]
+      .filter(k => now - userLastCommand.get(k) > 60000);
+    oldKeys.forEach(k => userLastCommand.delete(k));
   }
+  
+  return true;
 }
 
-async function showActiveCategories(chatId) {
-  try {
-    const user = await getUser(chatId);
-    const selectedCategories = user?.selected_categories || [];
-    
-    if (selectedCategories.length === 0) {
-      await sendMessage(chatId, 
-        '📭 У вас нет выбранных категорий.\n' +
-        'Используйте /add чтобы добавить категории.'
-      );
-      return;
-    }
-
-    const buttons = [];
-    
-    selectedCategories.forEach((cat, index) => {
-      buttons.push([{
-        text: `❌ ${cat}`,
-        callback_data: `remove_${index}_${cat}`
-      }]);
-    });
-
-    buttons.push([{
-      text: '🔙 Назад',
-      callback_data: 'back_to_add'
-    }]);
-
-    await sendMessage(chatId, 
-      `📋 <b>Ваши категории (${selectedCategories.length})</b>\n` +
-      `Нажмите на категорию чтобы удалить её.`, 
-      { 
-        reply_markup: { inline_keyboard: buttons },
-        parse_mode: 'HTML'
-      }
-    );
-  } catch (err) {
-    console.error('Ошибка в showActiveCategories:', err);
-  }
-}
-
-// ==================== РАБОТА С БД ПОЛЬЗОВАТЕЛЕЙ (ЭТО ОСТАВЛЯЕМ) ====================
+// ==================== РАБОТА С БД ПОЛЬЗОВАТЕЛЕЙ ====================
 
 async function getUser(telegramId) {
   try {
@@ -327,6 +153,221 @@ async function updateUserCategories(telegramId, categories) {
   } catch (err) {
     console.error('Ошибка обновления категорий:', err);
   }
+}
+
+// ==================== ПОЛУЧЕНИЕ ДАННЫХ С СЕРВЕРА ====================
+
+async function getProductsFromServer() {
+  try {
+    const response = await fetch(`${API_URL}/api/bot/products`, {
+      headers: {
+        'x-bot-key': SECRET_KEY
+      },
+      timeout: 10000 // 10 секунд таймаут
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    return data;
+  } catch (err) {
+    console.error('Ошибка получения данных с сервера:', err);
+    return null;
+  }
+}
+
+// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ====================
+
+async function getPriceChanges() {
+  const data = await getProductsFromServer();
+  
+  if (!data || !data.products) {
+    return [];
+  }
+  
+  const changes = data.products
+    .filter(p => p.priceToday && p.priceYesterday && 
+                Math.abs(p.priceToday - p.priceYesterday) > 0.01)
+    .map(p => {
+      const change = p.priceToday - p.priceYesterday;
+      return {
+        product_code: p.code,
+        product_name: p.name,
+        current_price: p.priceToday,
+        previous_price: p.priceYesterday,
+        change: change,
+        percent: (change / p.priceYesterday * 100).toFixed(1),
+        packPrice: p.packPrice,
+        monthly_payment: p.monthly_payment,
+        no_overpayment_max_months: p.no_overpayment_max_months,
+        link: p.link,
+        category: p.category,
+        brand: p.brand,
+        isDecrease: change < 0
+      };
+    })
+    .sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+  
+  return changes;
+}
+
+// ==================== ФУНКЦИИ ДЛЯ КАТЕГОРИЙ ====================
+
+async function getAllCategories() {
+  const data = await getProductsFromServer();
+  if (!data || !data.products) return [];
+  
+  const categories = [...new Set(data.products.map(p => p.category || 'Без категории'))];
+  return categories.sort();
+}
+
+async function getProductsByCategory(category) {
+  const data = await getProductsFromServer();
+  if (!data || !data.products) return [];
+  
+  return data.products
+    .filter(p => p.category === category)
+    .map(p => ({
+      code: p.code,
+      name: p.name,
+      last_price: p.priceToday || p.packPrice,
+      packPrice: p.packPrice,
+      monthly_payment: p.monthly_payment,
+      no_overpayment_max_months: p.no_overpayment_max_months,
+      link: p.link
+    }));
+}
+
+// ==================== ФУНКЦИИ ПОКАЗА КАТЕГОРИЙ ====================
+
+async function showAddCategories(chatId, user) {
+  try {
+    const categories = await getAllCategories();
+    
+    if (!categories || categories.length === 0) {
+      await sendMessage(chatId, '📭 В базе пока нет категорий');
+      return;
+    }
+
+    const selectedCategories = user?.selected_categories || [];
+
+    const buttons = [];
+    const row = [];
+    
+    categories.forEach((cat, index) => {
+      if (selectedCategories.includes(cat)) return;
+      
+      row.push({
+        text: cat,
+        callback_data: `add_${index}_${cat}`
+      });
+      
+      if (row.length === 2) {
+        buttons.push([...row]);
+        row.length = 0;
+      }
+    });
+    
+    if (row.length > 0) {
+      buttons.push(row);
+    }
+
+    if (buttons.length === 0) {
+      buttons.push([{
+        text: '✅ Все категории уже выбраны',
+        callback_data: 'noop'
+      }]);
+    }
+
+    buttons.push([{
+      text: '✅ Готово',
+      callback_data: 'done_adding'
+    }]);
+
+    const selectedText = selectedCategories.length > 0 
+      ? `\n\n<b>Выбранные категории:</b>\n${selectedCategories.map(c => `✅ ${c}`).join('\n')}` 
+      : '\n\n⚠️ Пока не выбрано ни одной категории';
+
+    await sendMessage(chatId, 
+      `📁 <b>Добавление категорий</b>\n` +
+      `Нажмите на категорию, чтобы добавить её в список отслеживания.${selectedText}`, 
+      { 
+        reply_markup: { inline_keyboard: buttons },
+        parse_mode: 'HTML'
+      }
+    );
+  } catch (err) {
+    console.error('Ошибка в showAddCategories:', err);
+    await sendMessage(chatId, '❌ Произошла ошибка. Попробуйте позже.');
+  }
+}
+
+async function showActiveCategories(chatId, user) {
+  try {
+    const selectedCategories = user?.selected_categories || [];
+    
+    if (selectedCategories.length === 0) {
+      await sendMessage(chatId, 
+        '📭 У вас нет выбранных категорий.\n' +
+        'Используйте /add чтобы добавить категории.'
+      );
+      return;
+    }
+
+    const buttons = [];
+    
+    selectedCategories.forEach((cat, index) => {
+      buttons.push([{
+        text: `❌ ${cat}`,
+        callback_data: `remove_${index}_${cat}`
+      }]);
+    });
+
+    buttons.push([{
+      text: '🔙 Назад',
+      callback_data: 'back_to_add'
+    }]);
+
+    await sendMessage(chatId, 
+      `📋 <b>Ваши категории (${selectedCategories.length})</b>\n` +
+      `Нажмите на категорию чтобы удалить её.`, 
+      { 
+        reply_markup: { inline_keyboard: buttons },
+        parse_mode: 'HTML'
+      }
+    );
+  } catch (err) {
+    console.error('Ошибка в showActiveCategories:', err);
+    await sendMessage(chatId, '❌ Произошла ошибка. Попробуйте позже.');
+  }
+}
+
+// ==================== ФУНКЦИИ ФОРМАТИРОВАНИЯ ====================
+
+function formatPrice(price) {
+  return price ? price.toFixed(2).replace('.', ',') : '—';
+}
+
+function formatProductSimple(product) {
+  return `• ${product.name}`;
+}
+
+function formatProductFull(product) {
+  const sign = product.isDecrease ? '' : '+';
+  const circleEmoji = product.isDecrease ? '🔴' : '🟢';
+  
+  return `
+${circleEmoji} <b>${product.product_name}</b>
+📋 Код: <code>${product.product_code}</code>
+💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
+💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${sign}${formatPrice(Math.abs(product.change))} (${sign}${product.percent}%)
+💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
+📆 Платеж: ${product.monthly_payment || '—'} руб./мес
+⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
+🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
+`;
 }
 
 // ==================== ФУНКЦИЯ ДЛЯ РАЗБИВКИ ДЛИННЫХ СООБЩЕНИЙ ====================
@@ -434,7 +475,16 @@ async function handleMessage(message) {
       return;
     }
 
-    if (!user || user.status !== 'approved') return;
+    // Проверка авторизации для всех команд кроме /start
+    if (!user) {
+      await sendMessage(chatId, '❌ Сначала используйте /start');
+      return;
+    }
+
+    if (user.status !== 'approved') {
+      await sendMessage(chatId, '⏳ Ваш запрос ещё рассматривается администратором');
+      return;
+    }
 
     if (text === '/help') {
       await sendMessage(chatId,
@@ -448,6 +498,10 @@ async function handleMessage(message) {
         '/changes - показать изменения цен за сегодня'
       );
     } else if (text === '/status') {
+      if (!checkRateLimit(userId, '/status')) {
+        return;
+      }
+      
       const categories = user.selected_categories || [];
       const categoriesInfo = categories.length > 0 
         ? `\n📁 Выбранные категории (${categories.length}):\n${categories.map(c => `• ${c}`).join('\n')}` 
@@ -458,10 +512,20 @@ async function handleMessage(message) {
         `🆔 ID: <code>${userId}</code>${categoriesInfo}`
       );
     } else if (text === '/add') {
-      await showAddCategories(chatId);
+      if (!checkRateLimit(userId, '/add')) {
+        return;
+      }
+      await showAddCategories(chatId, user);
     } else if (text === '/list') {
-      await showActiveCategories(chatId);
+      if (!checkRateLimit(userId, '/list')) {
+        return;
+      }
+      await showActiveCategories(chatId, user);
     } else if (text === '/goods') {
+      if (!checkRateLimit(userId, '/goods')) {
+        return;
+      }
+      
       const selectedCategories = user?.selected_categories || [];
       
       if (selectedCategories.length === 0) {
@@ -488,6 +552,10 @@ async function handleMessage(message) {
         `📦 <b>Товары в выбранных категориях (${allProducts.length}):</b>\n\n${productList}`
       );
     } else if (text === '/changes') {
+      if (!checkRateLimit(userId, '/changes')) {
+        return;
+      }
+      
       const changes = await getPriceChanges();
       
       if (changes.length === 0) {
@@ -508,6 +576,7 @@ async function handleMessage(message) {
     }
   } catch (err) {
     console.error('❌ Ошибка в handleMessage:', err);
+    await sendMessage(message?.chat?.id, '❌ Произошла внутренняя ошибка. Попробуйте позже.');
   }
 }
 
@@ -521,12 +590,24 @@ async function handleCallback(query) {
     const message = query.message;
     const fromId = query.from.id;
 
+    // Получаем пользователя для проверки авторизации
+    const user = await getUser(fromId);
+    
+    if (!user || user.status !== 'approved') {
+      await answerCallback(query.id, '⛔ Сначала авторизуйтесь через /start');
+      return;
+    }
+
+    if (data === 'noop') {
+      await answerCallback(query.id, '✅');
+      return;
+    }
+
     if (data.startsWith('add_')) {
       const parts = data.split('_');
       const index = parseInt(parts[1]);
       const category = parts.slice(2).join('_');
       
-      const user = await getUser(fromId);
       const selectedCategories = user?.selected_categories || [];
       
       if (!selectedCategories.includes(category)) {
@@ -537,7 +618,7 @@ async function handleCallback(query) {
         await answerCallback(query.id, `⚠️ Уже добавлена`);
       }
       
-      await showAddCategories(message.chat.id);
+      await showAddCategories(message.chat.id, user);
       return;
     }
 
@@ -546,7 +627,6 @@ async function handleCallback(query) {
       const index = parseInt(parts[1]);
       const category = parts.slice(2).join('_');
       
-      const user = await getUser(fromId);
       const selectedCategories = user?.selected_categories || [];
       
       const newCategories = selectedCategories.filter(c => c !== category);
@@ -554,18 +634,17 @@ async function handleCallback(query) {
       
       await answerCallback(query.id, `❌ ${category} удалена`);
       
-      await showActiveCategories(message.chat.id);
+      await showActiveCategories(message.chat.id, user);
       return;
     }
 
     if (data === 'back_to_add') {
       await answerCallback(query.id, '🔙 Возврат');
-      await showAddCategories(message.chat.id);
+      await showAddCategories(message.chat.id, user);
       return;
     }
 
     if (data === 'done_adding') {
-      const user = await getUser(fromId);
       const count = user?.selected_categories?.length || 0;
       
       await answerCallback(query.id, `✅ Выбрано: ${count}`);
@@ -589,6 +668,7 @@ async function handleCallback(query) {
       return;
     }
 
+    // Админские кнопки
     if (fromId != ADMIN_CHAT_ID) {
       await answerCallback(query.id, '⛔ Нет прав');
       return;
@@ -717,21 +797,27 @@ export function setupBotEndpoints(app, authenticateToken) {
       `);
       res.json(users.rows);
     } catch (err) {
+      console.error('Ошибка получения пользователей:', err);
       res.status(500).json({ error: err.message });
     }
   });
 
   app.post('/api/telegram/set-webhook', authenticateToken, async (req, res) => {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: 'URL обязателен' });
-
     try {
+      const { url } = req.body;
+      
+      // Валидация URL
+      if (!url || !url.startsWith('https://')) {
+        return res.status(400).json({ error: 'URL должен начинаться с https://' });
+      }
+
       const response = await fetch(
         `https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${url}/api/telegram/webhook`
       );
       const data = await response.json();
       res.json(data);
     } catch (err) {
+      console.error('Ошибка установки webhook:', err);
       res.status(500).json({ error: err.message });
     }
   });
@@ -744,6 +830,7 @@ export function setupBotEndpoints(app, authenticateToken) {
       const data = await response.json();
       res.json(data);
     } catch (err) {
+      console.error('Ошибка получения информации о webhook:', err);
       res.status(500).json({ error: err.message });
     }
   });
