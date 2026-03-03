@@ -157,12 +157,13 @@ async function getProductsByCategory(category) {
   }
 }
 
-// ==================== НОВАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ЗА СЕГОДНЯ ====================
+// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ЗА СЕГОДНЯ ====================
 
 async function getTodayPriceChanges() {
   try {
     const today = new Date().toISOString().split('T')[0];
     
+    // Получаем все записи за сегодня
     const result = await db.execute({
       sql: `
         SELECT 
@@ -185,7 +186,31 @@ async function getTodayPriceChanges() {
       args: [today]
     });
     
-    return result.rows;
+    // Группируем по товарам и проверяем изменение цены
+    const changesByProduct = {};
+    
+    result.rows.forEach(row => {
+      const code = row.product_code;
+      
+      if (!changesByProduct[code]) {
+        // Проверяем, изменилась ли цена
+        const priceChanged = Math.abs(row.new_price - row.old_price) > 0.01;
+        
+        if (priceChanged) {
+          changesByProduct[code] = {
+            ...row,
+            change: row.new_price - row.old_price,
+            percent: ((row.new_price - row.old_price) / row.old_price * 100).toFixed(1)
+          };
+        }
+      }
+    });
+    
+    // Преобразуем в массив и сортируем по времени
+    const filteredChanges = Object.values(changesByProduct)
+      .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    
+    return filteredChanges;
   } catch (err) {
     console.error('Ошибка получения изменений за сегодня:', err);
     return [];
@@ -304,18 +329,35 @@ function formatProductSimple(product) {
   return `• ${product.name}`;
 }
 
-function formatProductFull(product, oldPrice = null, newPrice = null) {
-  const changeEmoji = newPrice && oldPrice 
-    ? (newPrice < oldPrice ? '🔻' : '📈')
-    : '🆕';
+function formatProductFull(product, oldPrice = null, newPrice = null, change = null, percent = null) {
+  // Определяем эмодзи и цвет HTML
+  let changeEmoji = '🆕';
+  let priceChangeHtml = '';
   
-  const changeText = oldPrice && newPrice
-    ? `\n💰 <b>Было:</b> ${formatPrice(oldPrice)} руб.\n💰 <b>Стало:</b> ${formatPrice(newPrice)} руб.`
-    : `\n💰 <b>Цена:</b> ${formatPrice(product.last_price)} руб.`;
+  if (oldPrice && newPrice) {
+    if (Math.abs(newPrice - oldPrice) < 0.01) {
+      // Цена не изменилась (такое не должно попадать сюда, но на всякий случай)
+      priceChangeHtml = `\n💰 <b>Цена:</b> ${formatPrice(newPrice)} руб.`;
+    } else {
+      // Цена изменилась
+      const isDecrease = newPrice < oldPrice;
+      const color = isDecrease ? '#FF0000' : '#00FF00'; // красный для снижения, зеленый для повышения
+      const arrow = isDecrease ? '▼' : '▲';
+      const sign = isDecrease ? '' : '+';
+      
+      changeEmoji = isDecrease ? '🔻' : '📈';
+      
+      priceChangeHtml = `\n💰 <b>Было:</b> ${formatPrice(oldPrice)} руб.` +
+        `\n💰 <b style="color:${color};">Стало: ${formatPrice(newPrice)} руб. ${arrow} ${sign}${change} (${sign}${percent}%)</b>`;
+    }
+  } else {
+    // Нет сравнения - просто показываем текущую цену
+    priceChangeHtml = `\n💰 <b>Цена:</b> ${formatPrice(product.last_price)} руб.`;
+  }
 
   return `
 ${changeEmoji} <b>${product.name}</b>
-📋 Код: <code>${product.code}</code>${changeText}
+📋 Код: <code>${product.code}</code>${priceChangeHtml}
 💳 Рассрочка: ${formatPrice(product.packPrice)} руб.
 📆 Платеж: ${product.monthly_payment || '—'} руб./мес
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
@@ -449,7 +491,7 @@ async function handleMessage(message) {
       }
 
       await sendMessage(chatId, 
-        `📊 <b>Изменения цен за сегодня (${changes.length}):</b>\n\n`
+        `📊 <b>Изменения цен за сегодня (${changes.length}):</b>`
       );
 
       // Отправляем каждое изменение отдельным сообщением
@@ -469,7 +511,9 @@ async function handleMessage(message) {
         const message = formatProductFull(
           product, 
           change.old_price, 
-          change.new_price
+          change.new_price,
+          change.change.toFixed(2).replace('.', ','),
+          change.percent.replace('.', ',')
         );
 
         await sendMessage(chatId, message);
@@ -755,6 +799,13 @@ export async function sendTelegramMessage(message) {
 }
 
 export function formatPriceChangeNotification(product, oldPrice, newPrice, changeType = 'изменилась') {
-  // Используем ту же функцию форматирования, что и для /last
-  return formatProductFull(product, oldPrice, newPrice);
+  const change = newPrice - oldPrice;
+  const percent = ((change / oldPrice) * 100).toFixed(1);
+  return formatProductFull(
+    product, 
+    oldPrice, 
+    newPrice,
+    change.toFixed(2).replace('.', ','),
+    percent.replace('.', ',')
+  );
 }
