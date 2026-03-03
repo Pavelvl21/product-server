@@ -7,41 +7,23 @@ const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
 async function sendMessage(chatId, text, options = {}) {
-  console.log('📤 sendMessage вызван:', { chatId, text: text.substring(0, 50) + '...', options });
-  
-  if (!BOT_TOKEN) {
-    console.log('❌ BOT_TOKEN не задан');
-    return false;
-  }
+  if (!BOT_TOKEN) return false;
   
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-    console.log('📤 URL:', url);
-    
-    const body = {
-      chat_id: chatId,
-      text: text,
-      parse_mode: 'HTML',
-      ...options
-    };
-    console.log('📤 Body:', JSON.stringify(body, null, 2));
-    
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        parse_mode: 'HTML',
+        ...options
+      })
     });
-    
-    const responseData = await res.json();
-    console.log('📤 Ответ от Telegram:', responseData);
-    
-    if (!responseData.ok) {
-      console.log('❌ Ошибка от Telegram:', responseData.description);
-    }
-    
-    return responseData;
+    return await res.json();
   } catch (err) {
-    console.error('❌ Ошибка sendMessage:', err);
+    console.error('Telegram send error:', err);
     return false;
   }
 }
@@ -174,44 +156,23 @@ async function getProductsByCategory(category) {
 
 async function showCategoriesWithMultiSelect(chatId, messageId = null) {
   try {
-    console.log('📁 showCategoriesWithMultiSelect вызван для chatId:', chatId);
-    
-    // Получаем категории
     const categories = await getAllCategories();
-    console.log('📁 Получены категории из БД:', categories);
     
     if (!categories || categories.length === 0) {
-      console.log('📁 Категории не найдены, отправляем сообщение');
       await sendMessage(chatId, '📭 В базе пока нет категорий');
       return;
     }
 
-    // Получаем пользователя
     const user = await getUser(chatId);
-    console.log('👤 Данные пользователя:', user);
-    
-    // Получаем выбранные категории (парсим JSON если нужно)
-    let selectedCategories = [];
-    if (user && user.selected_categories) {
-      if (Array.isArray(user.selected_categories)) {
-        selectedCategories = user.selected_categories;
-      } else if (typeof user.selected_categories === 'string') {
-        try {
-          selectedCategories = JSON.parse(user.selected_categories);
-        } catch (e) {
-          console.log('📁 Ошибка парсинга selected_categories:', e.message);
-          selectedCategories = [];
-        }
-      }
-    }
-    console.log('📁 Выбранные категории:', selectedCategories);
+    const selectedCategories = user?.selected_categories || [];
 
-    // Создаем кнопки для каждой категории
+    // Создаем кнопки с кодированием кириллицы
     const buttons = categories.map(cat => {
       const isSelected = selectedCategories.includes(cat);
+      const encodedCat = encodeURIComponent(cat);
       return [{
         text: isSelected ? `✅ ${cat}` : `⬜️ ${cat}`,
-        callback_data: `toggle_cat_${cat}`
+        callback_data: `toggle_cat_${encodedCat}`
       }];
     });
 
@@ -233,12 +194,8 @@ async function showCategoriesWithMultiSelect(chatId, messageId = null) {
     };
 
     const text = `📁 Выберите категории\n\nВыбрано: ${selectedCategories.length} из ${categories.length}\n\nНажимайте на категории для выбора, затем подтвердите.`;
-    
-    console.log('📁 Отправляем клавиатуру с кнопками:', buttons.length, 'рядов');
 
     if (messageId) {
-      // Редактируем существующее сообщение
-      console.log('📁 Редактируем сообщение:', messageId);
       await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -250,14 +207,10 @@ async function showCategoriesWithMultiSelect(chatId, messageId = null) {
         })
       });
     } else {
-      // Новое сообщение
-      console.log('📁 Отправляем новое сообщение');
       await sendMessage(chatId, text, { reply_markup: keyboard });
     }
-    
-    console.log('📁 Функция showCategoriesWithMultiSelect выполнена успешно');
   } catch (err) {
-    console.error('❌ Ошибка в showCategoriesWithMultiSelect:', err);
+    console.error('Ошибка в showCategoriesWithMultiSelect:', err);
   }
 }
 
@@ -419,7 +372,8 @@ async function handleCallback(query) {
     const fromId = query.from.id;
 
     if (data.startsWith('toggle_cat_')) {
-      const category = data.replace('toggle_cat_', '');
+      const encodedCat = data.replace('toggle_cat_', '');
+      const category = decodeURIComponent(encodedCat);
       await toggleCategory(fromId, category);
       await showCategoriesWithMultiSelect(message.chat.id, message.message_id);
       await answerCallback(query.id, `🔄 Обновлено`);
