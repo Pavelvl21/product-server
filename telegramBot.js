@@ -295,14 +295,26 @@ async function handleMessage(message) {
     return;
   }
 
-  if (text === '/status') {
-    const categories = user.selected_categories || [];
-    const catText = categories.length 
-      ? `\n📁 Категории:\n${categories.map(c => `• ${c}`).join('\n')}` 
-      : '\n📁 Категории не выбраны';
-    await sendMessage(chatId, `✅ Статус: подтверждён${catText}`);
-    return;
-  }
+if (text === '/status') {
+  const categories = user.selected_categories || [];
+  const catText = categories.length 
+    ? `\n📁 Категории:\n${categories.map(c => `• ${c}`).join('\n')}` 
+    : '\n📁 Категории не выбраны';
+
+  // Получаем email из БД
+  const userInfo = await db.execute({
+    sql: 'SELECT email FROM telegram_users WHERE telegram_id = ?',
+    args: [userId]
+  });
+
+  const email = userInfo.rows[0]?.email || 'не указан';
+
+  await sendMessage(chatId,
+    `✅ <b>Статус:</b> подтверждён\n` +
+    `📧 Email: <code>${email}</code>${catText}`
+  );
+  return;
+}
 
   if (text === '/add') {
     await showAddCategories(chatId, user);
