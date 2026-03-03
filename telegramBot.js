@@ -4,6 +4,9 @@ import db from './database.js';
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
+// Хранилище для debounce кликов
+const userClicks = new Map();
+
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
 async function sendMessage(chatId, text, options = {}) {
@@ -57,7 +60,6 @@ async function getUser(telegramId) {
     
     if (result.rows[0]) {
       const user = result.rows[0];
-      // Парсим JSON для совместимости со старыми данными, но теперь это будет простой массив
       try {
         if (user.selected_categories) {
           user.selected_categories = JSON.parse(user.selected_categories);
@@ -416,14 +418,26 @@ async function handleCallback(query) {
     const message = query.message;
     const fromId = query.from.id;
 
+    // ========== ЗАЩИТА ОТ ДВОЙНЫХ КЛИКОВ ==========
+    const now = Date.now();
+    const lastClick = userClicks.get(fromId) || 0;
+    
+    if (now - lastClick < 800) { // 800ms защита
+      await answerCallback(query.id, '⏳ Подождите...');
+      return;
+    }
+    userClicks.set(fromId, now);
+
     // ========== ДОБАВЛЕНИЕ КАТЕГОРИИ ==========
     if (data.startsWith('add_')) {
+      // СНАЧАЛА отвечаем (мгновенно)
+      await answerCallback(query.id, '✅ Добавлено');
+      
       const parts = data.split('_');
       const index = parseInt(parts[1]);
       // Восстанавливаем категорию (она могла содержать пробелы)
       const category = parts.slice(2).join('_');
       
-      const categories = await getAllCategories();
       const user = await getUser(fromId);
       const selectedCategories = user?.selected_categories || [];
       
@@ -431,9 +445,6 @@ async function handleCallback(query) {
       if (!selectedCategories.includes(category)) {
         selectedCategories.push(category);
         await updateUserCategories(fromId, selectedCategories);
-        await answerCallback(query.id, `✅ ${category} добавлена`);
-      } else {
-        await answerCallback(query.id, `⚠️ Уже добавлена`);
       }
       
       // Показываем обновленный список
@@ -443,6 +454,9 @@ async function handleCallback(query) {
 
     // ========== УДАЛЕНИЕ КАТЕГОРИИ ==========
     if (data.startsWith('remove_')) {
+      // СНАЧАЛА отвечаем
+      await answerCallback(query.id, '✅ Удалено');
+      
       const parts = data.split('_');
       const index = parseInt(parts[1]);
       // Восстанавливаем категорию
@@ -455,8 +469,6 @@ async function handleCallback(query) {
       const newCategories = selectedCategories.filter(c => c !== category);
       await updateUserCategories(fromId, newCategories);
       
-      await answerCallback(query.id, `❌ ${category} удалена`);
-      
       // Показываем обновленный список
       await showActiveCategories(message.chat.id);
       return;
@@ -464,7 +476,7 @@ async function handleCallback(query) {
 
     // ========== НАЗАД К ДОБАВЛЕНИЮ ==========
     if (data === 'back_to_add') {
-      await answerCallback(query.id, '🔙 Возврат');
+      await answerCallback(query.id, '🔙 Назад');
       await showAddCategories(message.chat.id);
       return;
     }
@@ -586,6 +598,8 @@ async function handleCallback(query) {
     
   } catch (err) {
     console.error('❌ Ошибка в handleCallback:', err);
+    // В случае ошибки - ответим
+    await answerCallback(query.id, '❌ Ошибка').catch(() => {});
   }
 }
 
