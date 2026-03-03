@@ -205,56 +205,69 @@ async function getTodayPriceChanges() {
   try {
     const today = new Date().toISOString().split('T')[0];
     
-    const result = await db.execute({
+    // Сначала получаем ПОСЛЕДНЮЮ запись для каждого товара за сегодня
+    const lastChangesResult = await db.execute({
       sql: `
         SELECT 
           ph.product_code,
-          ph.product_name,
-          ph.price as new_price,
-          ph.updated_at,
-          pi.last_price as old_price,
-          pi.packPrice,
-          pi.monthly_payment,
-          pi.no_overpayment_max_months,
-          pi.link,
-          pi.category,
-          pi.brand
+          MAX(ph.updated_at) as last_update
         FROM price_history ph
-        JOIN products_info pi ON ph.product_code = pi.code
         WHERE DATE(ph.updated_at) = ?
-        ORDER BY ph.updated_at DESC
+        GROUP BY ph.product_code
       `,
       args: [today]
     });
     
-    const changesByProduct = {};
+    if (lastChangesResult.rows.length === 0) {
+      return [];
+    }
     
-    result.rows.forEach(row => {
-      const code = row.product_code;
+    // Теперь получаем полную информацию для этих последних записей
+    const changes = [];
+    
+    for (const row of lastChangesResult.rows) {
+      const productResult = await db.execute({
+        sql: `
+          SELECT 
+            ph.product_code,
+            ph.product_name,
+            ph.price as new_price,
+            ph.updated_at,
+            pi.last_price as old_price,
+            pi.packPrice,
+            pi.monthly_payment,
+            pi.no_overpayment_max_months,
+            pi.link,
+            pi.category,
+            pi.brand
+          FROM price_history ph
+          JOIN products_info pi ON ph.product_code = pi.code
+          WHERE ph.product_code = ? AND ph.updated_at = ?
+        `,
+        args: [row.product_code, row.last_update]
+      });
       
-      if (!changesByProduct[code]) {
-        const priceChanged = Math.abs(row.new_price - row.old_price) > 0.01;
+      if (productResult.rows.length > 0) {
+        const change = productResult.rows[0];
+        const priceChanged = Math.abs(change.new_price - change.old_price) > 0.01;
         
         if (priceChanged) {
-          changesByProduct[code] = {
-            ...row,
-            change: row.new_price - row.old_price,
-            percent: ((row.new_price - row.old_price) / row.old_price * 100).toFixed(1)
-          };
+          changes.push({
+            ...change,
+            change: change.new_price - change.old_price,
+            percent: ((change.new_price - change.old_price) / change.old_price * 100).toFixed(1)
+          });
         }
       }
-    });
+    }
     
-    const filteredChanges = Object.values(changesByProduct)
-      .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    return changes.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
     
-    return filteredChanges;
   } catch (err) {
     console.error('Ошибка получения изменений за сегодня:', err);
     return [];
   }
 }
-
 // ==================== ФУНКЦИИ ПОКАЗА КАТЕГОРИЙ ====================
 
 async function showAddCategories(chatId) {
