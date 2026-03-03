@@ -301,16 +301,23 @@ if (text === '/status') {
     ? `\n📁 Категории:\n${categories.map(c => `• ${c}`).join('\n')}` 
     : '\n📁 Категории не выбраны';
 
-  // Получаем email из БД
+  // Получаем email, имя, username из БД
   const userInfo = await db.execute({
-    sql: 'SELECT email FROM telegram_users WHERE telegram_id = ?',
+    sql: 'SELECT email, username, first_name, last_name FROM telegram_users WHERE telegram_id = ?',
     args: [userId]
   });
 
-  const email = userInfo.rows[0]?.email || 'не указан';
+  const info = userInfo.rows[0] || {};
+  const email = info.email || 'не указан';
+  const username = info.username ? `@${info.username}` : '—';
+  const firstName = info.first_name || '—';
+  const lastName = info.last_name || '—';
 
   await sendMessage(chatId,
     `✅ <b>Статус:</b> подтверждён\n` +
+    `🆔 ID: <code>${userId}</code>\n` +
+    `👤 Имя: ${firstName} ${lastName}\n` +
+    `📱 Username: ${username}\n` +
     `📧 Email: <code>${email}</code>${catText}`
   );
   return;
