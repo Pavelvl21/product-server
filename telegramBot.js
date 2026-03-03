@@ -158,29 +158,30 @@ async function getProductsByCategory(category) {
 // ==================== НОВАЯ ФУНКЦИЯ ПОКАЗА КАТЕГОРИЙ ====================
 
 async function showCategoriesSimple(chatId) {
+  console.log('📁 showCategoriesSimple вызвана для chatId:', chatId);
+  
   try {
-    console.log('📁 Получаем категории...');
+    console.log('📁 Шаг 1: Получаем категории из БД...');
     const categories = await getAllCategories();
-    console.log('📁 Получены категории:', categories);
+    console.log('📁 Шаг 1 - результат:', categories);
     
     if (!categories || categories.length === 0) {
-      console.log('📁 Категорий нет, отправляем сообщение');
+      console.log('📁 Категорий нет, отправляем сообщение об ошибке');
       await sendMessage(chatId, '📭 В базе пока нет категорий');
       return;
     }
 
-    console.log('📁 Получаем пользователя...');
+    console.log('📁 Шаг 2: Получаем пользователя...');
     const user = await getUser(chatId);
-    console.log('📁 Пользователь:', user);
+    console.log('📁 Шаг 2 - результат:', user);
     
     const selectedCategories = user?.selected_categories || [];
-    console.log('📁 Выбранные категории:', selectedCategories)
-
-    const user = await getUser(chatId);
-    const selectedCategories = user?.selected_categories || [];
+    console.log('📁 Шаг 3 - выбранные категории:', selectedCategories);
 
     // Создаем кнопки для каждой категории (просто названия)
+    console.log('📁 Шаг 4: Создаем кнопки...');
     const buttons = categories.map(cat => {
+      console.log('📁 Создаем кнопку для категории:', cat);
       return [{
         text: cat,
         callback_data: `select_cat_${cat}`
@@ -193,6 +194,8 @@ async function showCategoriesSimple(chatId) {
       callback_data: 'confirm_selection'
     }]);
 
+    console.log('📁 Шаг 5: Всего кнопок:', buttons.length, 'рядов');
+
     const keyboard = {
       inline_keyboard: buttons
     };
@@ -202,13 +205,18 @@ async function showCategoriesSimple(chatId) {
       : '';
 
     const text = `📁 Выберите категории (нажимайте по порядку)${selectedText}`;
+    console.log('📁 Шаг 6: Текст сообщения:', text);
 
-    await sendMessage(chatId, text, { 
+    console.log('📁 Шаг 7: Отправляем сообщение с клавиатурой...');
+    const result = await sendMessage(chatId, text, { 
       reply_markup: keyboard,
       parse_mode: 'HTML'
     });
+    console.log('📁 Шаг 7 - результат отправки:', result);
+    
+    console.log('📁 showCategoriesSimple завершена успешно');
   } catch (err) {
-    console.error('Ошибка в showCategoriesSimple:', err);
+    console.error('❌ Ошибка в showCategoriesSimple:', err);
   }
 }
 
