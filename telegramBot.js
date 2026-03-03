@@ -363,7 +363,7 @@ ${fullLink ? `🔗 <a href="${fullLink}">Ссылка на товар</a>` : ''}
   }
 }
 
-// ==================== ОБРАБОТЧИК CALLBACK ====================
+// ==================== ПОЛНАЯ ФУНКЦИЯ ОБРАБОТКИ CALLBACK ====================
 
 async function handleCallback(query) {
   console.log('📞 Callback получен:', query.data);
@@ -373,6 +373,7 @@ async function handleCallback(query) {
     const message = query.message;
     const fromId = query.from.id;
 
+    // Обработка выбора категории
     if (data.startsWith('toggle_cat_')) {
       console.log('🔍 Обработка toggle_cat');
       const encodedCat = data.replace('toggle_cat_', '');
@@ -385,6 +386,7 @@ async function handleCallback(query) {
       return;
     }
 
+    // Обработка кнопки "Выбрать все / Снять все"
     if (data === 'toggle_all_categories') {
       console.log('🔍 Обработка toggle_all');
       const user = await getUser(fromId);
@@ -397,6 +399,7 @@ async function handleCallback(query) {
       return;
     }
 
+    // Обработка подтверждения выбора
     if (data === 'confirm_categories') {
       console.log('🔍 Обработка confirm');
       const user = await getUser(fromId);
@@ -419,7 +422,81 @@ async function handleCallback(query) {
       return;
     }
 
-    // ... остальной код
+    // Проверка прав для админских кнопок
+    if (fromId != ADMIN_CHAT_ID) {
+      await answerCallback(query.id, '⛔ Нет прав');
+      return;
+    }
+
+    // Админские кнопки
+    if (data.startsWith('approve_')) {
+      console.log('🔍 Обработка approve');
+      const userId = data.replace('approve_', '');
+      const user = await getUser(userId);
+      
+      if (user) {
+        await updateUserStatus(userId, 'approved', 'admin');
+        
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            reply_markup: { inline_keyboard: [] }
+          })
+        });
+
+        await sendMessage(ADMIN_CHAT_ID, `✅ Пользователь ${userId} подтверждён`);
+        await sendMessage(user.chat_id, 
+          '✅ <b>Доступ подтверждён!</b>\n\nТеперь вы можете пользоваться ботом.\n/help'
+        );
+      }
+    } else if (data.startsWith('reject_')) {
+      console.log('🔍 Обработка reject');
+      const userId = data.replace('reject_', '');
+      const user = await getUser(userId);
+      
+      if (user) {
+        await updateUserStatus(userId, 'rejected', 'admin');
+        
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            reply_markup: { inline_keyboard: [] }
+          })
+        });
+
+        await sendMessage(ADMIN_CHAT_ID, `❌ Пользователь ${userId} отклонён`);
+        await sendMessage(user.chat_id, '⛔ <b>Доступ отклонён</b>');
+      }
+    } else if (data.startsWith('block_')) {
+      console.log('🔍 Обработка block');
+      const userId = data.replace('block_', '');
+      const user = await getUser(userId);
+      
+      if (user) {
+        await updateUserStatus(userId, 'blocked', 'admin');
+        
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            reply_markup: { inline_keyboard: [] }
+          })
+        });
+
+        await sendMessage(ADMIN_CHAT_ID, `🚫 Пользователь ${userId} заблокирован`);
+        await sendMessage(user.chat_id, '🚫 <b>Вы заблокированы</b>');
+      }
+    }
+
+    await answerCallback(query.id, '✅ Готово');
   } catch (err) {
     console.error('❌ Ошибка в handleCallback:', err);
   }
