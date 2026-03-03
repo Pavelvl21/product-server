@@ -7,23 +7,41 @@ const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
 async function sendMessage(chatId, text, options = {}) {
-  if (!BOT_TOKEN) return false;
+  console.log('📤 sendMessage вызван:', { chatId, text: text.substring(0, 50) + '...', options });
+  
+  if (!BOT_TOKEN) {
+    console.log('❌ BOT_TOKEN не задан');
+    return false;
+  }
   
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    console.log('📤 URL:', url);
+    
+    const body = {
+      chat_id: chatId,
+      text: text,
+      parse_mode: 'HTML',
+      ...options
+    };
+    console.log('📤 Body:', JSON.stringify(body, null, 2));
+    
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: text,
-        parse_mode: 'HTML',
-        ...options
-      })
+      body: JSON.stringify(body)
     });
-    return await res.json();
+    
+    const responseData = await res.json();
+    console.log('📤 Ответ от Telegram:', responseData);
+    
+    if (!responseData.ok) {
+      console.log('❌ Ошибка от Telegram:', responseData.description);
+    }
+    
+    return responseData;
   } catch (err) {
-    console.error('Telegram send error:', err);
+    console.error('❌ Ошибка sendMessage:', err);
     return false;
   }
 }
