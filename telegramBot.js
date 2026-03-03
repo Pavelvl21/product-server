@@ -6,6 +6,9 @@ const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const SECRET_KEY = process.env.SECRET_KEY;
 const API_URL = process.env.API_URL || 'http://localhost:3000';
 
+// Временное хранилище для email до сохранения
+const tempEmail = new Map();
+
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
 async function sendMessage(chatId, text, options = {}) {
@@ -25,7 +28,7 @@ async function sendMessage(chatId, text, options = {}) {
     });
     return await res.json();
   } catch (err) {
-    console.error('Telegram send error:', err);
+    console.error('❌ Telegram send error:', err);
     return false;
   }
 }
@@ -43,7 +46,7 @@ async function answerCallback(callbackId, text) {
       })
     });
   } catch (err) {
-    console.error('Callback answer error:', err);
+    console.error('❌ Callback answer error:', err);
   }
 }
 
@@ -52,7 +55,7 @@ async function answerCallback(callbackId, text) {
 async function getUser(telegramId) {
   try {
     const result = await db.execute({
-      sql: 'SELECT status, chat_id, selected_categories FROM telegram_users WHERE telegram_id = ?',
+      sql: 'SELECT status, chat_id, selected_categories, email FROM telegram_users WHERE telegram_id = ?',
       args: [telegramId]
     });
     if (result.rows[0]) {
@@ -66,21 +69,22 @@ async function getUser(telegramId) {
     }
     return null;
   } catch (err) {
-    console.error('Ошибка в getUser:', err);
+    console.error('❌ Ошибка в getUser:', err);
     return null;
   }
 }
 
-async function saveUser(telegramId, username, firstName, lastName, chatId) {
+async function saveUser(telegramId, username, firstName, lastName, chatId, email) {
   try {
     await db.execute({
       sql: `INSERT INTO telegram_users 
-            (telegram_id, username, first_name, last_name, chat_id, status, selected_categories)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
-      args: [telegramId, username || '', firstName || '', lastName || '', chatId, '[]']
+            (telegram_id, username, first_name, last_name, chat_id, status, selected_categories, email)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      args: [telegramId, username || '', firstName || '', lastName || '', chatId, '[]', email]
     });
+    console.log(`✅ Пользователь ${telegramId} сохранён`);
   } catch (err) {
-    console.error('Ошибка сохранения пользователя:', err);
+    console.error('❌ Ошибка сохранения пользователя:', err);
   }
 }
 
@@ -95,8 +99,9 @@ async function updateUserStatus(telegramId, status, approvedBy = null) {
             WHERE telegram_id = ?`,
       args: [status, approvedBy, telegramId]
     });
+    console.log(`✅ Статус ${telegramId} обновлён на ${status}`);
   } catch (err) {
-    console.error('Ошибка обновления статуса:', err);
+    console.error('❌ Ошибка обновления статуса:', err);
   }
 }
 
@@ -106,34 +111,42 @@ async function updateUserCategories(telegramId, categories) {
       sql: 'UPDATE telegram_users SET selected_categories = ? WHERE telegram_id = ?',
       args: [JSON.stringify(categories), telegramId]
     });
+    console.log(`✅ Категории для ${telegramId} обновлены`);
   } catch (err) {
-    console.error('Ошибка обновления категорий:', err);
+    console.error('❌ Ошибка обновления категорий:', err);
+  }
+}
+
+// ==================== ДОБАВЛЕНИЕ EMAIL В allowed_emails ====================
+
+async function addEmailToAllowedList(email) {
+  try {
+    await db.execute({
+      sql: 'INSERT INTO allowed_emails (email) VALUES (?) ON CONFLICT(email) DO NOTHING',
+      args: [email]
+    });
+    console.log(`✅ Email ${email} добавлен в allowed_emails`);
+  } catch (err) {
+    console.error('❌ Ошибка добавления email в allowed_emails:', err);
   }
 }
 
 // ==================== ПОЛУЧЕНИЕ КАТЕГОРИЙ ====================
 
-async function getAllCategories() {
+async function getCategoriesFromServer() {
   try {
-    const data = await getProductsFromServer();
-    if (!data?.products) return [];
-    const cats = [...new Set(data.products.map(p => p.category || 'Без категории'))];
-    return cats.sort();
-  } catch {
+    console.log('🌐 Запрос категорий с сервера');
+    const response = await fetch(`${API_URL}/api/public/categories`);
+    if (!response.ok) {
+      console.error(`❌ Ошибка HTTP: ${response.status}`);
+      return [];
+    }
+    const data = await response.json();
+    console.log(`📦 Получено категорий: ${data.length}`);
+    return data;
+  } catch (err) {
+    console.error('❌ Ошибка получения категорий:', err);
     return [];
-  }
-}
-
-async function getProductsFromServer() {
-  try {
-    const response = await fetch(`${API_URL}/api/bot/products`, {
-      headers: { 'x-bot-key': SECRET_KEY },
-      timeout: 5000
-    });
-    if (!response.ok) return null;
-    return await response.json();
-  } catch {
-    return null;
   }
 }
 
@@ -162,24 +175,26 @@ ${circleEmoji} <b>${product.product_name}</b>
 `;
 }
 
-function formatProductSimple(product) {
-  return `• ${product.name}`;
-}
+// ==================== ВЫБОР КАТЕГОРИЙ ПОЛЬЗОВАТЕЛЕМ ====================
 
-// ==================== ВЫБОР КАТЕГОРИЙ ====================
+async function showCategorySelection(chatId, userId, selected = []) {
+  console.log(`🎯 Показ категорий для ${userId}`);
 
-async function showAddCategories(chatId, user) {
-  const allCats = await getAllCategories();
-  const selected = user?.selected_categories || [];
+  const allCats = await getCategoriesFromServer();
+
+  if (!allCats || allCats.length === 0) {
+    await sendMessage(chatId, '❌ Категории временно недоступны. Попробуй позже.');
+    return;
+  }
 
   const keyboard = [];
   let row = [];
 
   for (const cat of allCats) {
-    if (selected.includes(cat)) continue;
+    const isSelected = selected.includes(cat);
     row.push({
-      text: cat,
-      callback_data: `add_${cat}`
+      text: (isSelected ? '✅ ' : '⬜ ') + cat,
+      callback_data: `sel_cat_${userId}_${cat}`
     });
     if (row.length === 2) {
       keyboard.push([...row]);
@@ -187,60 +202,56 @@ async function showAddCategories(chatId, user) {
     }
   }
   if (row.length) keyboard.push(row);
-  keyboard.push([{ text: '✅ Готово', callback_data: 'done_adding' }]);
 
-  const selectedText = selected.length > 0 
+  keyboard.push([{
+    text: '📬 Отправить запрос',
+    callback_data: `send_request_${userId}`
+  }]);
+
+  const selectedText = selected.length 
     ? `\n\n✅ Уже выбрано:\n${selected.map(c => `• ${c}`).join('\n')}` 
     : '';
 
-  await sendMessage(chatId, 
-    `📁 Выбери категории для отслеживания:${selectedText}`, 
+  await sendMessage(chatId,
+    `📁 Выбери категории для отслеживания:${selectedText}`,
     { reply_markup: { inline_keyboard: keyboard } }
   );
 }
 
-async function showActiveCategories(chatId, user) {
-  const selected = user?.selected_categories || [];
-  if (selected.length === 0) {
-    await sendMessage(chatId, '📭 У вас нет выбранных категорий.\nИспользуйте /add');
-    return;
-  }
+// ==================== УВЕДОМЛЕНИЕ АДМИНУ ====================
 
-  const buttons = selected.map(cat => [{
-    text: `❌ ${cat}`,
-    callback_data: `remove_${cat}`
-  }]);
+async function notifyAdminAboutNewUser(telegramId, email, categories, userData) {
+  const catsText = categories.length 
+    ? categories.map(c => `• ${c}`).join('\n') 
+    : '—';
 
-  buttons.push([{ text: '🔙 Назад', callback_data: 'back_to_add' }]);
+  const text = `
+🔔 <b>Новый запрос доступа</b>
 
-  await sendMessage(chatId, 
-    `📋 Ваши категории (${selected.length}):\nНажмите на категорию чтобы удалить.`, 
-    { reply_markup: { inline_keyboard: buttons } }
-  );
-}
+👤 <b>${userData.firstName || '—'} ${userData.lastName || ''}</b>
+📱 Username: ${userData.username ? '@' + userData.username : '—'}
+🆔 ID: <code>${telegramId}</code>
+📧 Email: <code>${email}</code>
 
-// ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
-
-async function notifyAdminAboutNewUser(userId, username, firstName, chatId) {
-  const info = [
-    `🆔 ID: <code>${userId}</code>`,
-    `👤 Имя: ${firstName || '—'}`,
-    `📱 Username: ${username ? '@' + username : '—'}`,
-    `💬 Chat ID: <code>${chatId}</code>`
-  ].join('\n');
+📋 Выбранные категории:
+${catsText}
+`;
 
   const keyboard = {
     inline_keyboard: [[
-      { text: '✅ Разрешить', callback_data: `approve_${userId}` },
-      { text: '❌ Отклонить', callback_data: `reject_${userId}` },
-      { text: '🚫 Заблокировать', callback_data: `block_${userId}` }
+      { text: '✅ Разрешить', callback_data: `approve_${telegramId}` },
+      { text: '❌ Отклонить', callback_data: `reject_${telegramId}` }
+    ], [
+      { text: '🚫 Заблокировать', callback_data: `block_${telegramId}` }
     ]]
   };
 
-  await sendMessage(ADMIN_CHAT_ID, `🔔 Новый пользователь!\n\n${info}`, {
+  await sendMessage(ADMIN_CHAT_ID, text, {
     reply_markup: keyboard
   });
 }
+
+// ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
 async function handleMessage(message) {
   const chatId = message.chat.id;
@@ -250,168 +261,90 @@ async function handleMessage(message) {
   const firstName = message.from.first_name;
   const lastName = message.from.last_name;
 
-  console.log(`📨 ${text} от ${userId}`);
+  console.log(`\n📨 Сообщение от ${userId}: ${text}`);
 
   const user = await getUser(userId);
 
+  // === /start ===
   if (text === '/start') {
-    if (!user) {
-      await saveUser(userId, username, firstName, lastName, chatId);
-      await sendMessage(chatId, 
-        '👋 Привет! Я бот для отслеживания цен.\n\n' +
-        '📝 Запрос на доступ отправлен администратору.'
-      );
-      await notifyAdminAboutNewUser(userId, username, firstName, chatId);
-    } else if (user.status === 'approved') {
-      await sendMessage(chatId, '👋 С возвращением! /help');
-    } else if (user.status === 'pending') {
-      await sendMessage(chatId, '⏳ Запрос ещё рассматривается');
-    } else {
-      await sendMessage(chatId, '⛔ Доступ запрещён');
+    if (user) {
+      if (user.status === 'approved') {
+        await sendMessage(chatId, '👋 С возвращением! /help');
+        return;
+      }
+      if (user.status === 'pending') {
+        await sendMessage(chatId, '⏳ Запрос ещё рассматривается');
+        return;
+      }
+      if (user.status === 'rejected') {
+        await sendMessage(chatId, '⛔ Ваш запрос был отклонён');
+        return;
+      }
+      if (user.status === 'blocked') {
+        await sendMessage(chatId, '🚫 Вы заблокированы');
+        return;
+      }
     }
-    return;
-  }
 
-  if (!user) {
-    await sendMessage(chatId, '❌ Сначала используй /start');
-    return;
-  }
-
-  if (user.status !== 'approved') {
-    await sendMessage(chatId, '⏳ Ваш запрос ещё рассматривается');
-    return;
-  }
-
-  // === КОМАНДЫ ===
-  if (text === '/help') {
+    // Новый пользователь
+    tempEmail.set(userId, { username, firstName, lastName, chatId, selected: [] });
     await sendMessage(chatId,
-      '📋 <b>Команды:</b>\n\n' +
-      '/add — выбрать категории\n' +
-      '/list — показать выбранные\n' +
-      '/goods — список товаров\n' +
-      '/changes — изменения цен\n' +
-      '/status — профиль'
+      '👋 Привет! Для доступа укажи свой корпоративный email (@patio-minsk.by)\n\n✉️ Отправь его:'
     );
     return;
   }
 
-if (text === '/status') {
-  const categories = user.selected_categories || [];
-  const catText = categories.length 
-    ? `\n📁 Категории:\n${categories.map(c => `• ${c}`).join('\n')}` 
-    : '\n📁 Категории не выбраны';
+  // === Ожидание email ===
+  if (!user && tempEmail.has(userId)) {
+    const email = text.trim().toLowerCase();
 
-  // Получаем email, имя, username из БД
-  const userInfo = await db.execute({
-    sql: 'SELECT email, username, first_name, last_name FROM telegram_users WHERE telegram_id = ?',
-    args: [userId]
-  });
-
-  const info = userInfo.rows[0] || {};
-  const email = info.email || 'не указан';
-  const username = info.username ? `@${info.username}` : '—';
-  const firstName = info.first_name || '—';
-  const lastName = info.last_name || '—';
-
-  await sendMessage(chatId,
-    `✅ <b>Статус:</b> подтверждён\n` +
-    //`🆔 ID: <code>${userId}</code>\n` +
-    `👤 Имя: ${firstName} ${lastName}\n` +
-    `📱 Username: ${username}\n` +
-    //`📧 Email: <code>${email}</code>${catText}`
-  );
-  return;
-}
-
-  if (text === '/add') {
-    await showAddCategories(chatId, user);
-    return;
-  }
-
-  if (text === '/list') {
-    await showActiveCategories(chatId, user);
-    return;
-  }
-
-  if (text === '/goods') {
-    const selected = user.selected_categories || [];
-    if (selected.length === 0) {
-      await sendMessage(chatId, '❌ Сначала выберите категории через /add');
+    if (!email.endsWith('@patio-minsk.by')) {
+      await sendMessage(chatId, '❌ Допустимы только email @patio-minsk.by');
       return;
     }
 
-    let products = [];
-    for (const cat of selected) {
-      const data = await getProductsFromServer();
-      const catProducts = data?.products?.filter(p => p.category === cat) || [];
-      products.push(...catProducts);
-    }
+    const data = tempEmail.get(userId);
+    data.email = email;
+    tempEmail.set(userId, data);
 
-    if (products.length === 0) {
-      await sendMessage(chatId, '📭 Нет товаров');
-      return;
-    }
-
-    const list = products.map(p => `• ${p.name}`).join('\n');
-    await sendMessage(chatId, `📦 Товаров: ${products.length}\n\n${list}`);
+    console.log(`✅ Email ${email} принят для ${userId}`);
+    await sendMessage(chatId, '✅ Email принят. Теперь выбери категории.');
+    await showCategorySelection(chatId, userId, []);
     return;
   }
 
-if (text === '/changes') {
-  const selected = user.selected_categories || [];
-  if (selected.length === 0) {
-    await sendMessage(chatId, '❌ Сначала выберите категории через /add');
+  // === Если не авторизован ===
+  if (!user || user.status !== 'approved') {
+    await sendMessage(chatId, '❌ Сначала используй /start');
     return;
   }
 
-  const data = await getProductsFromServer();
-  const changes = data?.products
-    .filter(p => 
-      selected.includes(p.category) && 
-      p.priceToday && 
-      p.priceYesterday && 
-      Math.abs(p.priceToday - p.priceYesterday) > 0.01
-    )
-    .map(p => ({
-      code: p.code,
-      name: p.name,
-      priceToday: p.priceToday,
-      priceYesterday: p.priceYesterday,
-      change: p.priceToday - p.priceYesterday,
-      percent: ((p.priceToday - p.priceYesterday) / p.priceYesterday * 100).toFixed(1),
-      packPrice: p.packPrice,
-      no_overpayment_max_months: p.no_overpayment_max_months,
-      link: p.link,
-      isDecrease: p.priceToday < p.priceYesterday
-    })) || [];
-
-  if (changes.length === 0) {
-    await sendMessage(chatId, '📭 В выбранных категориях сегодня нет изменений');
+  // === Команды ===
+  if (text === '/help') {
+    await sendMessage(chatId,
+      '📋 <b>Команды:</b>\n\n' +
+      '/status — профиль\n' +
+      '/add — выбрать категории\n' +
+      '/list — показать выбранные\n' +
+      '/goods — список товаров (скоро)\n' +
+      '/changes — изменения цен (скоро)'
+    );
     return;
   }
 
-  await sendMessage(chatId, `📊 Изменений в ваших категориях: ${changes.length}`);
-  
-  for (const ch of changes.slice(0, 5)) {
-    await sendMessage(chatId, formatProductFull({
-      product_code: ch.code,
-      product_name: ch.name,
-      current_price: ch.priceToday,
-      previous_price: ch.priceYesterday,
-      change: ch.change,
-      percent: ch.percent,
-      packPrice: ch.packPrice,
-      no_overpayment_max_months: ch.no_overpayment_max_months,
-      link: ch.link,
-      isDecrease: ch.isDecrease
-    }));
-    
-    if (changes.length > 5 && ch === changes[4]) {
-      await sendMessage(chatId, `... и ещё ${changes.length - 5} изменений.`);
-    }
+  if (text === '/status') {
+    const categories = user.selected_categories || [];
+    const catText = categories.length 
+      ? `\n📁 Категории:\n${categories.map(c => `• ${c}`).join('\n')}` 
+      : '\n📁 Категории не выбраны';
+
+    await sendMessage(chatId,
+      `✅ <b>Статус:</b> подтверждён\n` +
+      `🆔 ID: <code>${userId}</code>\n` +
+      `📧 Email: <code>${user.email || '—'}</code>${catText}`
+    );
+    return;
   }
-  return;
-}
 
   await sendMessage(chatId, '❓ Неизвестная команда. /help');
 }
@@ -423,44 +356,73 @@ async function handleCallback(query) {
   const msg = query.message;
   const fromId = query.from.id;
 
-  console.log('📞 Callback:', data);
+  console.log(`\n🔘 Callback от ${fromId}: ${data}`);
 
-  const user = await getUser(fromId);
-  if (!user || user.status !== 'approved') {
-    await answerCallback(query.id, '⛔ Сначала авторизуйтесь');
-    return;
-  }
+  // === Добавление/удаление категории пользователем ===
+  if (data.startsWith('sel_cat_')) {
+    const parts = data.split('_');
+    const targetUserId = parseInt(parts[2]);
+    const category = parts.slice(3).join('_');
 
-  if (data.startsWith('add_')) {
-    const category = data.replace('add_', '');
-    const selected = user.selected_categories || [];
-    if (!selected.includes(category)) {
-      selected.push(category);
-      await updateUserCategories(fromId, selected);
-      await answerCallback(query.id, `✅ ${category} добавлена`);
+    if (targetUserId !== fromId) {
+      await answerCallback(query.id, '⛔ Это не твоя сессия');
+      return;
     }
-    await showAddCategories(msg.chat.id, user);
+
+    const userData = tempEmail.get(fromId);
+    if (!userData) {
+      await answerCallback(query.id, '❌ Сессия не найдена');
+      return;
+    }
+
+    const selected = userData.selected || [];
+    const updated = selected.includes(category)
+      ? selected.filter(c => c !== category)
+      : [...selected, category];
+
+    userData.selected = updated;
+    tempEmail.set(fromId, userData);
+
+    await answerCallback(query.id, `✅ ${category} ${selected.includes(category) ? 'убрана' : 'добавлена'}`);
+    await showCategorySelection(msg.chat.id, fromId, updated);
     return;
   }
 
-  if (data.startsWith('remove_')) {
-    const category = data.replace('remove_', '');
-    const selected = user.selected_categories || [];
-    const updated = selected.filter(c => c !== category);
-    await updateUserCategories(fromId, updated);
-    await answerCallback(query.id, `❌ ${category} удалена`);
-    await showActiveCategories(msg.chat.id, { ...user, selected_categories: updated });
+  // === Отправка запроса ===
+  if (data.startsWith('send_request_')) {
+    const userData = tempEmail.get(fromId);
+    
+    if (!userData || !userData.email) {
+      await answerCallback(query.id, '❌ Данные не найдены');
+      return;
+    }
+
+    // Здесь должен быть вызов API регистрации
+    await answerCallback(query.id, '📬 Запрос отправлен');
+    await sendMessage(msg.chat.id, '📬 Запрос отправлен администратору. Ожидайте.');
+    
+    await notifyAdminAboutNewUser(
+      fromId,
+      userData.email,
+      userData.selected || [],
+      userData
+    );
+    
+    tempEmail.delete(fromId);
     return;
   }
 
-  if (data === 'back_to_add') {
-    await answerCallback(query.id, '🔙 Назад');
-    await showAddCategories(msg.chat.id, user);
+  // === Админские кнопки ===
+  if (fromId != ADMIN_CHAT_ID) {
+    await answerCallback(query.id, '⛔ Только для админа');
     return;
   }
 
-  if (data === 'done_adding') {
-    await answerCallback(query.id, '✅ Готово');
+  if (data.startsWith('approve_')) {
+    const targetUserId = data.replace('approve_', '');
+    await updateUserStatus(targetUserId, 'approved', 'admin');
+    await answerCallback(query.id, '✅ Подтверждён');
+    await sendMessage(targetUserId, '✅ Ваш запрос одобрен! /help');
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -473,50 +435,27 @@ async function handleCallback(query) {
     return;
   }
 
-  // Админские кнопки
-  if (fromId != ADMIN_CHAT_ID) {
-    await answerCallback(query.id, '⛔ Нет прав');
-    return;
-  }
-
-  if (data.startsWith('approve_')) {
-    const userId = data.replace('approve_', '');
-    await updateUserStatus(userId, 'approved', 'admin');
-    await answerCallback(query.id, '✅ Подтверждён');
-    await sendMessage(userId, '✅ Ваш запрос одобрен!');
+  if (data.startsWith('reject_')) {
+    const targetUserId = data.replace('reject_', '');
+    await updateUserStatus(targetUserId, 'rejected', 'admin');
+    await answerCallback(query.id, '❌ Отклонён');
+    await sendMessage(targetUserId, '❌ Ваш запрос отклонён');
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
       method: 'POST',
       body: JSON.stringify({
         chat_id: msg.chat.id,
         message_id: msg.message_id,
         reply_markup: { inline_keyboard: [] }
-      })
-    });
-    return;
-  }
-
-  if (data.startsWith('reject_')) {
-    const userId = data.replace('reject_', '');
-    await updateUserStatus(userId, 'rejected', 'admin');
-    await answerCallback(query.id, '❌ Отклонён');
-    await sendMessage(userId, '❌ Доступ отклонён');
-    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
-      method: 'POST',
-      body: JSON.stringify({
-        chat_id: msg.chat.id,
-        message_id: msg.message_id,
-        reply_markup: { inline_keyboard: []
-        }
       })
     });
     return;
   }
 
   if (data.startsWith('block_')) {
-    const userId = data.replace('block_', '');
-    await updateUserStatus(userId, 'blocked', 'admin');
+    const targetUserId = data.replace('block_', '');
+    await updateUserStatus(targetUserId, 'blocked', 'admin');
     await answerCallback(query.id, '🚫 Заблокирован');
-    await sendMessage(userId, '🚫 Вы заблокированы');
+    await sendMessage(targetUserId, '🚫 Вы заблокированы');
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
       method: 'POST',
       body: JSON.stringify({
@@ -527,6 +466,8 @@ async function handleCallback(query) {
     });
     return;
   }
+
+  await answerCallback(query.id, '❓ Неизвестная команда');
 }
 
 // ==================== ЭКСПОРТЫ ====================
@@ -541,15 +482,7 @@ export async function handleTelegramUpdate(update) {
 }
 
 export function setupBotEndpoints(app, authenticateToken) {
-  app.get('/api/telegram/users', authenticateToken, async (req, res) => {
-    const users = await db.execute(`
-      SELECT telegram_id, username, first_name, last_name, status, selected_categories,
-             requested_at, approved_at, approved_by
-      FROM telegram_users
-      ORDER BY requested_at DESC
-    `);
-    res.json(users.rows);
-  });
+  console.log('🔌 Бот эндпоинты настроены');
 }
 
 export async function sendTelegramMessage(message) {
