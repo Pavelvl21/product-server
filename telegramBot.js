@@ -1,8 +1,9 @@
 import fetch from 'node-fetch';
-import db from './database.js';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const SECRET_KEY = process.env.SECRET_KEY;
+const API_URL = process.env.API_URL || 'http://localhost:3000';
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
@@ -47,277 +48,114 @@ async function answerCallback(callbackId, text) {
   }
 }
 
-// ==================== ФУНКЦИЯ ДЛЯ РАЗБИВКИ ДЛИННЫХ СООБЩЕНИЙ ====================
+// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ДАННЫХ С СЕРВЕРА ====================
 
-async function sendLongMessage(chatId, text, options = {}) {
-  const MAX_LENGTH = 4096;
-  
-  if (text.length <= MAX_LENGTH) {
-    return await sendMessage(chatId, text, options);
-  }
-  
-  const parts = [];
-  let remainingText = text;
-  
-  while (remainingText.length > 0) {
-    let part = remainingText.slice(0, MAX_LENGTH);
-    
-    const lastNewline = part.lastIndexOf('\n');
-    if (lastNewline > 0 && remainingText.length > MAX_LENGTH) {
-      part = remainingText.slice(0, lastNewline);
-      remainingText = remainingText.slice(lastNewline);
-    } else {
-      remainingText = remainingText.slice(MAX_LENGTH);
-    }
-    
-    parts.push(part);
-  }
-  
-  for (let i = 0; i < parts.length; i++) {
-    const partText = i === 0 
-      ? parts[i] 
-      : `📌 <b>Продолжение (часть ${i + 1}/${parts.length}):</b>\n\n${parts[i]}`;
-    
-    await sendMessage(chatId, partText, options);
-    
-    if (i < parts.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-  }
-  
-  return true;
-}
-
-// ==================== РАБОТА С БД ====================
-
-async function getUser(telegramId) {
+async function getProductsFromServer() {
   try {
-    const result = await db.execute({
-      sql: 'SELECT status, chat_id, selected_categories FROM telegram_users WHERE telegram_id = ?',
-      args: [telegramId]
-    });
-    
-    if (result.rows[0]) {
-      const user = result.rows[0];
-      try {
-        if (user.selected_categories) {
-          user.selected_categories = JSON.parse(user.selected_categories);
-        } else {
-          user.selected_categories = [];
-        }
-      } catch (e) {
-        user.selected_categories = [];
+    const response = await fetch(`${API_URL}/api/bot/products`, {
+      headers: {
+        'x-bot-key': SECRET_KEY
       }
-      return user;
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
+    
+    const data = await response.json();
+    return data;
+  } catch (err) {
+    console.error('Ошибка получения данных с сервера:', err);
     return null;
-  } catch (err) {
-    console.error('Ошибка в getUser:', err);
-    return null;
   }
 }
 
-async function saveUser(telegramId, username, firstName, lastName, chatId) {
-  try {
-    await db.execute({
-      sql: `INSERT INTO telegram_users 
-            (telegram_id, username, first_name, last_name, chat_id, status, selected_categories)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
-      args: [telegramId, username || '', firstName || '', lastName || '', chatId, '[]']
-    });
-  } catch (err) {
-    console.error('Ошибка сохранения пользователя:', err);
+// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ ====================
+
+async function getPriceChanges() {
+  const data = await getProductsFromServer();
+  
+  if (!data || !data.products) {
+    return [];
   }
+  
+  const changes = data.products
+    .filter(p => p.priceToday && p.priceYesterday && 
+                Math.abs(p.priceToday - p.priceYesterday) > 0.01)
+    .map(p => {
+      const change = p.priceToday - p.priceYesterday;
+      return {
+        product_code: p.code,
+        product_name: p.name,
+        current_price: p.priceToday,
+        previous_price: p.priceYesterday,
+        change: change,
+        percent: (change / p.priceYesterday * 100).toFixed(1),
+        packPrice: p.packPrice,
+        monthly_payment: p.monthly_payment,
+        no_overpayment_max_months: p.no_overpayment_max_months,
+        link: p.link,
+        category: p.category,
+        brand: p.brand,
+        isDecrease: change < 0
+      };
+    })
+    .sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+  
+  return changes;
 }
 
-async function updateUserStatus(telegramId, status, approvedBy = null) {
-  try {
-    const approvedAt = status === 'approved' ? 'CURRENT_TIMESTAMP' : 'NULL';
-    await db.execute({
-      sql: `UPDATE telegram_users 
-            SET status = ?, 
-                approved_at = ${approvedAt},
-                approved_by = ?
-            WHERE telegram_id = ?`,
-      args: [status, approvedBy, telegramId]
-    });
-  } catch (err) {
-    console.error('Ошибка обновления статуса:', err);
-  }
+// ==================== ФУНКЦИИ ФОРМАТИРОВАНИЯ ====================
+
+function formatPrice(price) {
+  return price ? price.toFixed(2).replace('.', ',') : '—';
 }
 
-async function updateUserCategories(telegramId, categories) {
-  try {
-    await db.execute({
-      sql: 'UPDATE telegram_users SET selected_categories = ? WHERE telegram_id = ?',
-      args: [JSON.stringify(categories), telegramId]
-    });
-  } catch (err) {
-    console.error('Ошибка обновления категорий:', err);
-  }
+function formatProductSimple(product) {
+  return `• ${product.name}`;
+}
+
+function formatProductFull(product) {
+  const sign = product.isDecrease ? '' : '+';
+  const circleEmoji = product.isDecrease ? '🔴' : '🟢';
+  
+  return `
+${circleEmoji} <b>${product.product_name}</b>
+📋 Код: <code>${product.product_code}</code>
+💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
+💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${sign}${formatPrice(Math.abs(product.change))} (${sign}${product.percent}%)
+💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
+📆 Платеж: ${product.monthly_payment || '—'} руб./мес
+⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
+🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
+`;
 }
 
 // ==================== ФУНКЦИИ ДЛЯ КАТЕГОРИЙ ====================
 
 async function getAllCategories() {
-  try {
-    const result = await db.execute(`
-      SELECT DISTINCT category 
-      FROM products_info 
-      WHERE category IS NOT NULL AND category != ''
-      ORDER BY category
-    `);
-    return result.rows.map(row => row.category);
-  } catch (err) {
-    console.error('Ошибка получения категорий:', err);
-    return [];
-  }
+  const data = await getProductsFromServer();
+  if (!data || !data.products) return [];
+  
+  const categories = [...new Set(data.products.map(p => p.category || 'Без категории'))];
+  return categories.sort();
 }
 
 async function getProductsByCategory(category) {
-  try {
-    const result = await db.execute({
-      sql: `
-        SELECT 
-          code,
-          name,
-          last_price,
-          packPrice,
-          monthly_payment,
-          no_overpayment_max_months,
-          link
-        FROM products_info 
-        WHERE category = ?
-        ORDER BY name
-      `,
-      args: [category]
-    });
-    return result.rows;
-  } catch (err) {
-    console.error('Ошибка получения товаров:', err);
-    return [];
-  }
-}
-
-// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ КАК НА ФРОНТЕ ====================
-
-// ==================== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИЗМЕНЕНИЙ КАК НА ФРОНТЕ ====================
-
-async function getChangesLikeFrontend() {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    
-    console.log('📅 ===== НАЧАЛО ЛОГИРОВАНИЯ =====');
-    console.log(`📅 Сегодня: ${today}`);
-    console.log(`📅 Вчера: ${yesterday}`);
-    
-    // Сначала проверим конкретный товар 10012 напрямую
-    console.log('\n🔍 ПРОВЕРКА ТОВАРА 10012:');
-    
-    // Проверяем products_info
-    const productInfo = await db.execute({
-      sql: 'SELECT * FROM products_info WHERE code = ?',
-      args: ['10012']
-    });
-    console.log('📦 products_info для 10012:', JSON.stringify(productInfo.rows[0], null, 2));
-    
-    // Проверяем записи в price_history за последние 3 дня
-    const priceHistory = await db.execute({
-      sql: `
-        SELECT DATE(updated_at) as date, price, updated_at
-        FROM price_history 
-        WHERE product_code = ? AND updated_at >= datetime('now', '-3 days')
-        ORDER BY updated_at DESC
-      `,
-      args: ['10012']
-    });
-    console.log('📜 price_history для 10012:');
-    priceHistory.rows.forEach(row => {
-      console.log(`   ${row.date}: ${row.price} (${row.updated_at})`);
-    });
-    
-    // Теперь выполняем основной запрос
-    console.log('\n🔍 ВЫПОЛНЕНИЕ ОСНОВНОГО ЗАПРОСА:');
-    
-    const result = await db.execute({
-      sql: `
-        SELECT 
-          p.code,
-          p.name,
-          p.link,
-          p.category,
-          p.brand,
-          p.packPrice,
-          p.monthly_payment,
-          p.no_overpayment_max_months,
-          MAX(CASE WHEN DATE(ph.updated_at) = ? THEN ph.price END) as price_today,
-          MAX(CASE WHEN DATE(ph.updated_at) = ? THEN ph.price END) as price_yesterday
-        FROM products_info p
-        LEFT JOIN price_history ph ON p.code = ph.product_code
-        WHERE ph.updated_at >= datetime('now', '-2 days')
-        GROUP BY p.code
-      `,
-      args: [today, yesterday]
-    });
-    
-    console.log(`📊 Всего товаров в результате: ${result.rows.length}`);
-    
-    // Найдем товар 10012 в результате
-    const product10012 = result.rows.find(row => row.code === '10012');
-    if (product10012) {
-      console.log('\n🔍 ТОВАР 10012 В РЕЗУЛЬТАТЕ:');
-      console.log(`   code: ${product10012.code}`);
-      console.log(`   name: ${product10012.name}`);
-      console.log(`   price_today: ${product10012.price_today} (за ${today})`);
-      console.log(`   price_yesterday: ${product10012.price_yesterday} (за ${yesterday})`);
-      console.log(`   packPrice: ${product10012.packPrice}`);
-    } else {
-      console.log('\n❌ Товар 10012 НЕ НАЙДЕН в результате запроса');
-    }
-    
-    const changes = result.rows
-      .filter(row => row.price_today && row.price_yesterday)
-      .map(row => {
-        const change = row.price_today - row.price_yesterday;
-        const percent = (change / row.price_yesterday * 100).toFixed(1);
-        
-        return {
-          product_code: row.code,
-          product_name: row.name,
-          current_price: row.price_today,
-          previous_price: row.price_yesterday,
-          change: change,
-          percent: percent,
-          packPrice: row.packPrice,
-          monthly_payment: row.monthly_payment,
-          no_overpayment_max_months: row.no_overpayment_max_months,
-          link: row.link,
-          category: row.category,
-          brand: row.brand,
-          isDecrease: change < 0
-        };
-      })
-      .filter(row => Math.abs(row.change) > 0.01)
-      .sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
-    
-    console.log(`\n✅ Изменений после фильтрации: ${changes.length}`);
-    
-    // Выведем первые 3 изменения для проверки
-    changes.slice(0, 3).forEach((c, i) => {
-      console.log(`\n📊 Изменение ${i+1}:`);
-      console.log(`   Товар: ${c.product_code} - ${c.product_name}`);
-      console.log(`   Цены: ${c.previous_price} → ${c.current_price}`);
-      console.log(`   Изменение: ${c.change} (${c.percent}%)`);
-    });
-    
-    console.log('📅 ===== КОНЕЦ ЛОГИРОВАНИЯ =====\n');
-    
-    return changes;
-  } catch (err) {
-    console.error('❌ Ошибка получения изменений:', err);
-    return [];
-  }
+  const data = await getProductsFromServer();
+  if (!data || !data.products) return [];
+  
+  return data.products
+    .filter(p => p.category === category)
+    .map(p => ({
+      code: p.code,
+      name: p.name,
+      last_price: p.priceToday || p.packPrice,
+      packPrice: p.packPrice,
+      monthly_payment: p.monthly_payment,
+      no_overpayment_max_months: p.no_overpayment_max_months,
+      link: p.link
+    }));
 }
 
 // ==================== ФУНКЦИИ ПОКАЗА КАТЕГОРИЙ ====================
@@ -421,31 +259,114 @@ async function showActiveCategories(chatId) {
   }
 }
 
-// ==================== ФУНКЦИИ ФОРМАТИРОВАНИЯ ====================
+// ==================== РАБОТА С БД ПОЛЬЗОВАТЕЛЕЙ (ЭТО ОСТАВЛЯЕМ) ====================
 
-function formatPrice(price) {
-  return price ? price.toFixed(2).replace('.', ',') : '—';
+async function getUser(telegramId) {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT status, chat_id, selected_categories FROM telegram_users WHERE telegram_id = ?',
+      args: [telegramId]
+    });
+    
+    if (result.rows[0]) {
+      const user = result.rows[0];
+      try {
+        if (user.selected_categories) {
+          user.selected_categories = JSON.parse(user.selected_categories);
+        } else {
+          user.selected_categories = [];
+        }
+      } catch (e) {
+        user.selected_categories = [];
+      }
+      return user;
+    }
+    return null;
+  } catch (err) {
+    console.error('Ошибка в getUser:', err);
+    return null;
+  }
 }
 
-function formatProductSimple(product) {
-  return `• ${product.name}`;
+async function saveUser(telegramId, username, firstName, lastName, chatId) {
+  try {
+    await db.execute({
+      sql: `INSERT INTO telegram_users 
+            (telegram_id, username, first_name, last_name, chat_id, status, selected_categories)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+      args: [telegramId, username || '', firstName || '', lastName || '', chatId, '[]']
+    });
+  } catch (err) {
+    console.error('Ошибка сохранения пользователя:', err);
+  }
 }
 
-function formatProductFull(product) {
-  const isDecrease = product.change < 0;
-  const sign = isDecrease ? '' : '+';
-  const circleEmoji = isDecrease ? '🔴' : '🟢';
+async function updateUserStatus(telegramId, status, approvedBy = null) {
+  try {
+    const approvedAt = status === 'approved' ? 'CURRENT_TIMESTAMP' : 'NULL';
+    await db.execute({
+      sql: `UPDATE telegram_users 
+            SET status = ?, 
+                approved_at = ${approvedAt},
+                approved_by = ?
+            WHERE telegram_id = ?`,
+      args: [status, approvedBy, telegramId]
+    });
+  } catch (err) {
+    console.error('Ошибка обновления статуса:', err);
+  }
+}
+
+async function updateUserCategories(telegramId, categories) {
+  try {
+    await db.execute({
+      sql: 'UPDATE telegram_users SET selected_categories = ? WHERE telegram_id = ?',
+      args: [JSON.stringify(categories), telegramId]
+    });
+  } catch (err) {
+    console.error('Ошибка обновления категорий:', err);
+  }
+}
+
+// ==================== ФУНКЦИЯ ДЛЯ РАЗБИВКИ ДЛИННЫХ СООБЩЕНИЙ ====================
+
+async function sendLongMessage(chatId, text, options = {}) {
+  const MAX_LENGTH = 4096;
   
-  return `
-${circleEmoji} <b>${product.product_name}</b>
-📋 Код: <code>${product.product_code}</code>
-💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
-💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${sign}${formatPrice(Math.abs(product.change))} (${sign}${product.percent}%)
-💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
-📆 Платеж: ${product.monthly_payment || '—'} руб./мес
-⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
-🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
-`;
+  if (text.length <= MAX_LENGTH) {
+    return await sendMessage(chatId, text, options);
+  }
+  
+  const parts = [];
+  let remainingText = text;
+  
+  while (remainingText.length > 0) {
+    let part = remainingText.slice(0, MAX_LENGTH);
+    
+    const lastNewline = part.lastIndexOf('\n');
+    if (lastNewline > 0 && remainingText.length > MAX_LENGTH) {
+      part = remainingText.slice(0, lastNewline);
+      remainingText = remainingText.slice(lastNewline);
+    } else {
+      remainingText = remainingText.slice(MAX_LENGTH);
+    }
+    
+    parts.push(part);
+  }
+  
+  for (let i = 0; i < parts.length; i++) {
+    const partText = i === 0 
+      ? parts[i] 
+      : `📌 <b>Продолжение (часть ${i + 1}/${parts.length}):</b>\n\n${parts[i]}`;
+    
+    await sendMessage(chatId, partText, options);
+    
+    if (i < parts.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+  
+  return true;
 }
 
 // ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
@@ -501,7 +422,7 @@ async function handleMessage(message) {
           '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
-          '/changes - изменения цен (как на сайте)\n' +
+          '/changes - изменения цен за сегодня\n' +
           '/help - список всех команд'
         );
       } else if (user.status === 'pending') {
@@ -523,7 +444,7 @@ async function handleMessage(message) {
         '/add - добавить категории для отслеживания\n' +
         '/list - показать выбранные категории\n' +
         '/goods - показать список товаров (только названия)\n' +
-        '/changes - показать изменения цен (как на сайте)'
+        '/changes - показать изменения цен за сегодня'
       );
     } else if (text === '/status') {
       const categories = user.selected_categories || [];
@@ -542,8 +463,6 @@ async function handleMessage(message) {
     } else if (text === '/goods') {
       const selectedCategories = user?.selected_categories || [];
       
-      console.log(`📦 /goods: выбранные категории ${JSON.stringify(selectedCategories)}`);
-      
       if (selectedCategories.length === 0) {
         await sendMessage(chatId, '❌ Сначала выберите категории через /add');
         return;
@@ -551,9 +470,7 @@ async function handleMessage(message) {
 
       let allProducts = [];
       for (const category of selectedCategories) {
-        console.log(`🔍 Получение товаров для категории: ${category}`);
         const products = await getProductsByCategory(category);
-        console.log(`📦 Найдено товаров в категории ${category}: ${products.length}`);
         allProducts = [...allProducts, ...products];
       }
       
@@ -566,16 +483,14 @@ async function handleMessage(message) {
         .map(p => formatProductSimple(p))
         .join('\n');
 
-      console.log(`📤 Отправка списка товаров, длина: ${productList.length}`);
-
       await sendLongMessage(chatId, 
         `📦 <b>Товары в выбранных категориях (${allProducts.length}):</b>\n\n${productList}`
       );
     } else if (text === '/changes') {
-      const changes = await getChangesLikeFrontend();
+      const changes = await getPriceChanges();
       
       if (changes.length === 0) {
-        await sendMessage(chatId, '📭 За последние 24 часа изменений цен не было');
+        await sendMessage(chatId, '📭 За сегодня изменений цен не было');
         return;
       }
 
@@ -702,7 +617,7 @@ async function handleCallback(query) {
           '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
-          '/changes - изменения цен (как на сайте)\n' +
+          '/changes - изменения цен за сегодня\n' +
           '/help - список всех команд'
         );
         await answerCallback(query.id, '✅ Подтверждено');
@@ -877,6 +792,7 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice) {
     packPrice: product.packPrice,
     monthly_payment: product.monthly_payment,
     no_overpayment_max_months: product.no_overpayment_max_months,
-    link: product.link
+    link: product.link,
+    isDecrease: isDecrease
   });
 }
