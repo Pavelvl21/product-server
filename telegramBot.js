@@ -1,4 +1,3 @@
-// telegramBot.js
 import fetch from 'node-fetch';
 import db from './database.js';
 import {
@@ -19,6 +18,64 @@ const API_URL = process.env.API_URL || 'http://localhost:3000';
 // Хранилище для rate limiting
 const userLastCommand = new Map();
 
+// ==================== ЦВЕТНОЕ ЛОГИРОВАНИЕ ====================
+const colors = {
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  dim: '\x1b[2m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m'
+};
+
+function logCommand(userId, command, status = 'start', details = '') {
+  const timestamp = new Date().toLocaleTimeString();
+  const statusColor = {
+    start: colors.blue,
+    success: colors.green,
+    error: colors.red,
+    warning: colors.yellow
+  }[status] || colors.reset;
+  
+  const statusIcon = {
+    start: '▶️',
+    success: '✅',
+    error: '❌',
+    warning: '⚠️'
+  }[status] || '•';
+  
+  console.log(
+    `${colors.dim}[${timestamp}]${colors.reset} ` +
+    `${statusColor}${statusIcon}${colors.reset} ` +
+    `${colors.bright}[${command}]${colors.reset} ` +
+    `${colors.cyan}userId:${userId}${colors.reset} ` +
+    `${details}`
+  );
+}
+
+function logRateLimit(userId, command, waitTime) {
+  console.log(
+    `${colors.yellow}⏳ RateLimit${colors.reset} ` +
+    `${colors.dim}[${command}]${colors.reset} ` +
+    `${colors.cyan}userId:${userId}${colors.reset} ` +
+    `${colors.yellow}жди ${waitTime}с${colors.reset}`
+  );
+}
+
+function logAPI(endpoint, status, time, details = '') {
+  const statusColor = status === 'success' ? colors.green : colors.red;
+  console.log(
+    `${colors.magenta}🌐 API${colors.reset} ` +
+    `${statusColor}[${status}]${colors.reset} ` +
+    `${colors.dim}${endpoint}${colors.reset} ` +
+    `${colors.yellow}${time}ms${colors.reset} ` +
+    `${details}`
+  );
+}
+
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
 async function sendMessage(chatId, text, options = {}) {
@@ -36,9 +93,15 @@ async function sendMessage(chatId, text, options = {}) {
         ...options
       })
     });
-    return await res.json();
+    const result = await res.json();
+    
+    if (!result.ok) {
+      console.log(`${colors.red}❌ Telegram API error:${colors.reset} ${result.description}`);
+    }
+    
+    return result;
   } catch (err) {
-    console.error('Telegram send error:', err);
+    console.error(`${colors.red}❌ Telegram send error:${colors.reset}`, err);
     return false;
   }
 }
@@ -73,7 +136,12 @@ function checkRateLimit(userId, command) {
   };
   
   const limit = limits[command] || limits.default;
-  if (now - lastTime < limit) return false;
+  
+  if (now - lastTime < limit) {
+    const waitTime = Math.ceil((limit - (now - lastTime)) / 1000);
+    logRateLimit(userId, command, waitTime);
+    return false;
+  }
   
   userLastCommand.set(key, now);
   
@@ -155,7 +223,7 @@ async function lockUserSelection(telegramId) {
       sql: 'UPDATE telegram_users SET selection_locked = ? WHERE telegram_id = ?',
       args: [true, telegramId]
     });
-    console.log(`🔒 Выбор заблокирован для ${telegramId}`);
+    logCommand(telegramId, 'lock', 'success', `выбор заблокирован`);
   } catch (err) {
     console.error('Ошибка блокировки выбора:', err);
   }
@@ -164,13 +232,21 @@ async function lockUserSelection(telegramId) {
 // ==================== ПОЛУЧЕНИЕ КАТЕГОРИЙ ====================
 
 async function getCategoriesFromServer() {
+  const startTime = Date.now();
   try {
     const response = await fetch(`${API_URL}/api/public/categories`);
-    if (!response.ok) return [];
+    const time = Date.now() - startTime;
+    
+    if (!response.ok) {
+      logAPI('/api/public/categories', 'error', time, `status:${response.status}`);
+      return [];
+    }
+    
     const data = await response.json();
+    logAPI('/api/public/categories', 'success', time, `категорий:${data.categories?.length || 0}`);
     return data.categories || [];
   } catch (err) {
-    console.error('Ошибка получения категорий:', err);
+    logAPI('/api/public/categories', 'error', Date.now() - startTime, err.message);
     return [];
   }
 }
@@ -178,24 +254,38 @@ async function getCategoriesFromServer() {
 // ==================== ПОЛУЧЕНИЕ ДАННЫХ ====================
 
 async function getProductsFromServer() {
+  const startTime = Date.now();
   try {
     const response = await fetch(`${API_URL}/api/bot/products`, {
       headers: { 'x-bot-key': SECRET_KEY },
       timeout: 10000
     });
-    if (!response.ok) return null;
-    return await response.json();
+    const time = Date.now() - startTime;
+    
+    if (!response.ok) {
+      logAPI('/api/bot/products', 'error', time, `status:${response.status}`);
+      return null;
+    }
+    
+    const data = await response.json();
+    logAPI('/api/bot/products', 'success', time, `товаров:${data.products?.length || 0}`);
+    return data;
   } catch (err) {
-    console.error('Ошибка получения данных:', err);
+    logAPI('/api/bot/products', 'error', Date.now() - startTime, err.message);
     return null;
   }
 }
 
 async function getPriceChanges() {
+  logCommand(0, 'getPriceChanges', 'start', 'запрос изменений цен');
   const data = await getProductsFromServer();
-  if (!data?.products) return [];
   
-  return data.products
+  if (!data?.products) {
+    logCommand(0, 'getPriceChanges', 'error', 'нет данных от API');
+    return [];
+  }
+  
+  const changes = data.products
     .filter(p => p.priceToday && p.priceYesterday && Math.abs(p.priceToday - p.priceYesterday) > 0.01)
     .map(p => ({
       product_code: p.code,
@@ -212,12 +302,23 @@ async function getPriceChanges() {
       brand: p.brand,
       isDecrease: p.priceToday < p.priceYesterday
     }));
+  
+  logCommand(0, 'getPriceChanges', 'success', `найдено изменений:${changes.length}`);
+  return changes;
 }
 
 async function getProductsByCategory(categories) {
+  logCommand(0, 'getProductsByCategory', 'start', `категории:${categories.length}`);
   const data = await getProductsFromServer();
-  if (!data?.products) return [];
-  return data.products.filter(p => categories.includes(p.category));
+  
+  if (!data?.products) {
+    logCommand(0, 'getProductsByCategory', 'error', 'нет данных от API');
+    return [];
+  }
+  
+  const products = data.products.filter(p => categories.includes(p.category));
+  logCommand(0, 'getProductsByCategory', 'success', `найдено товаров:${products.length}`);
+  return products;
 }
 
 // ==================== ФОРМАТИРОВАНИЕ ====================
@@ -239,7 +340,7 @@ export function formatProductFull(product) {
 ${circleEmoji} <b>${product.product_name}</b>
 📋 Код: <code>${product.product_code}</code>
 💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
-💰 <b>Стало:</b} ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change)} (${product.percent}%)
+💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change)} (${product.percent}%)
 💳 РЦ в рассрочку: ${installmentPrice} руб.
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>
@@ -269,12 +370,17 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice) {
 // ==================== ПОКАЗ КАТЕГОРИЙ ====================
 
 async function showCategoryList(chatId, userId) {
+  logCommand(userId, 'showCategoryList', 'start', 'запрос категорий');
+  
   const categories = await getCategoriesFromServer();
   if (!categories.length) {
+    logCommand(userId, 'showCategoryList', 'error', 'категории недоступны');
     await sendMessage(chatId, '📭 Категории временно недоступны');
     return;
   }
 
+  logCommand(userId, 'showCategoryList', 'success', `получено категорий:${categories.length}`);
+  
   await sendMessage(chatId, 
     '📋 <b>Доступные категории</b>\n\n' +
     'Нажимайте на кнопки под каждой категорией, чтобы добавить её в свой список.\n' +
@@ -306,6 +412,8 @@ async function showCategoryList(chatId, userId) {
     '✅ Когда выберете все нужные категории, нажмите кнопку ниже:',
     { reply_markup: finishKeyboard }
   );
+  
+  logCommand(userId, 'showCategoryList', 'success', 'категории показаны');
 }
 
 // ==================== УВЕДОМЛЕНИЕ АДМИНУ ====================
@@ -329,6 +437,8 @@ async function notifyAdminAboutNewUser(userId, username, firstName, chatId) {
   await sendMessage(ADMIN_CHAT_ID, `🔔 Новый пользователь!\n\n${info}`, {
     reply_markup: keyboard
   });
+  
+  logCommand(ADMIN_CHAT_ID, 'newUser', 'success', `новый пользователь:${userId}`);
 }
 
 // ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
@@ -341,18 +451,19 @@ async function handleMessage(message) {
   const firstName = message.from.first_name;
   const lastName = message.from.last_name;
 
-  console.log(`📨 ${text} от ${userId}`);
-  
+  logCommand(userId, text, 'start');
+
   const user = await getUser(userId);
 
-  // === СКРЫТАЯ КОМАНДА ДЛЯ ПРОВЕРКИ АДМИНСТВА (работает всегда) ===
+  // === СКРЫТАЯ КОМАНДА ДЛЯ ПРОВЕРКИ АДМИНСТВА ===
   if (text === '/isAdmin') {
     const isAdmin = (userId == ADMIN_CHAT_ID);
     await sendMessage(chatId, isAdmin ? '✅ Да' : '❌ Нет');
+    logCommand(userId, '/isAdmin', 'success', isAdmin ? 'админ' : 'не админ');
     return;
   }
 
-  // === КОМАНДЫ АДМИНА (доступны только админу) ===
+  // === КОМАНДЫ АДМИНА ===
   if (userId == ADMIN_CHAT_ID) {
     
     if (text === '/help_broadcast') {
@@ -365,11 +476,13 @@ async function handleMessage(message) {
         '<b>/help_broadcast</b> - это сообщение\n\n' +
         '📌 <i>Задержка 35мс между сообщениями</i>'
       );
+      logCommand(userId, '/help_broadcast', 'success');
       return;
     }
 
     if (text.startsWith('/broadcast ')) {
       const messageText = text.replace('/broadcast ', '');
+      logCommand(userId, '/broadcast', 'start', `длина:${messageText.length}`);
       
       await sendMessage(chatId, `📣 Запускаю рассылку всем...`);
       
@@ -382,6 +495,7 @@ async function handleMessage(message) {
         }
       }).then(results => {
         sendMessage(ADMIN_CHAT_ID, formatBroadcastResults(results, 'all'));
+        logCommand(userId, '/broadcast', 'success', `успешно:${results.success}, ошибок:${results.failed}`);
       });
       
       return;
@@ -396,16 +510,20 @@ async function handleMessage(message) {
           'Используйте: /broadcast_cat категория1,категория2 Текст\n' +
           'Пример: /broadcast_cat Электроника,Ноутбуки Скидка 20%!'
         );
+        logCommand(userId, '/broadcast_cat', 'error', 'неверный формат');
         return;
       }
       
       const categories = match[1].split(',').map(c => c.trim());
       const messageText = match[2];
       
+      logCommand(userId, '/broadcast_cat', 'start', `категории:${categories.length}, текст:${messageText.length} символов`);
+      
       await sendMessage(chatId, `📣 Рассылка по категориям: ${categories.join(', ')}`);
       
       broadcastToCategories(messageText, categories).then(results => {
         sendMessage(ADMIN_CHAT_ID, formatBroadcastResults(results, 'categories'));
+        logCommand(userId, '/broadcast_cat', 'success', `успешно:${results.success}, ошибок:${results.failed}`);
       });
       
       return;
@@ -413,14 +531,22 @@ async function handleMessage(message) {
 
     if (text.startsWith('/test_broadcast ')) {
       const messageText = text.replace('/test_broadcast ', '');
+      logCommand(userId, '/test_broadcast', 'start', `текст:${messageText}`);
+      
       const sent = await sendTestMessage(messageText);
       await sendMessage(chatId, sent ? '✅ Тест отправлен' : '❌ Ошибка');
+      
+      logCommand(userId, '/test_broadcast', sent ? 'success' : 'error');
       return;
     }
 
     if (text === '/stats') {
+      logCommand(userId, '/stats', 'start', 'запрос статистики');
+      
       const stats = await getSubscriberStats();
       await sendMessage(chatId, formatSubscriberStats(stats));
+      
+      logCommand(userId, '/stats', 'success', `всего:${stats.total}, категорий:${Object.keys(stats.byCategory).length}`);
       return;
     }
   }
@@ -428,13 +554,17 @@ async function handleMessage(message) {
   // === ОБРАБОТКА /START ===
   if (text === '/start') {
     if (!user) {
+      logCommand(userId, '/start', 'start', 'новый пользователь');
       await saveUser(userId, username, firstName, lastName, chatId);
       await notifyAdminAboutNewUser(userId, username, firstName, chatId);
       await sendMessage(chatId, '⏳ Запрос отправлен администратору. Ожидайте.');
+      logCommand(userId, '/start', 'success', 'отправлен на модерацию');
       return;
     }
 
     if (user.status === 'approved') {
+      logCommand(userId, '/start', 'start', `одобрен, выбор_заблокирован:${user.selection_locked}`);
+      
       if (!user.selection_locked) {
         await showCategoryList(chatId, userId);
       } else {
@@ -447,20 +577,25 @@ async function handleMessage(message) {
           '/help - помощь'
         );
       }
+      logCommand(userId, '/start', 'success', 'приветствие отправлено');
     } else {
       await sendMessage(chatId, '⏳ Ваш запрос ещё рассматривается');
+      logCommand(userId, '/start', 'warning', `статус:${user.status}`);
     }
     return;
   }
 
   // === ПРОВЕРКА СТАТУСА ===
   if (!user || user.status !== 'approved') {
+    logCommand(userId, text, 'error', `доступ запрещён, статус:${user?.status || 'не найден'}`);
     await sendMessage(chatId, '❌ Доступ запрещён');
     return;
   }
 
-  // === ОБЫЧНЫЕ КОМАНДЫ ===
+  // === /STATUS ===
   if (text === '/status') {
+    logCommand(userId, '/status', 'start');
+    
     if (!checkRateLimit(userId, '/status')) return;
     
     const locked = user.selection_locked ? '🔒 Заблокирован' : '🔓 Можно выбрать';
@@ -473,27 +608,36 @@ async function handleMessage(message) {
       `✅ <b>Статус:</b> подтверждён\n` +
       `🔒 Выбор категорий: ${locked}${catText}`
     );
+    
+    logCommand(userId, '/status', 'success', `категорий:${categories.length}, заблокирован:${user.selection_locked}`);
     return;
   }
 
+  // === /GOODS ===
   if (text === '/goods') {
-    if (!checkRateLimit(userId, '/goods')) return;
+    logCommand(userId, '/goods', 'start');
     
+    if (!checkRateLimit(userId, '/goods')) return;
+
     const categories = user.selected_categories || [];
     if (!categories.length) {
+      logCommand(userId, '/goods', 'error', 'нет категорий');
       await sendMessage(chatId, '❌ Категории не выбраны');
       return;
     }
 
     const products = await getProductsByCategory(categories);
     if (!products.length) {
+      logCommand(userId, '/goods', 'warning', 'нет товаров');
       await sendMessage(chatId, '📭 Нет товаров');
       return;
     }
 
-    // Разбиваем на части по 50 товаров
-    const batchSize = 50;
+    logCommand(userId, '/goods', 'success', `найдено товаров:${products.length}`);
     await sendMessage(chatId, `📦 Найдено товаров: ${products.length}. Отправляю список...`);
+
+    const batchSize = 50;
+    let sentCount = 0;
     
     for (let i = 0; i < products.length; i += batchSize) {
       const batch = products.slice(i, i + batchSize);
@@ -501,16 +645,25 @@ async function handleMessage(message) {
       const header = `📋 Часть ${Math.floor(i/batchSize) + 1}/${Math.ceil(products.length/batchSize)}:\n\n`;
       
       await sendMessage(chatId, header + list);
+      sentCount += batch.length;
+      
+      logCommand(userId, '/goods', 'success', `отправлена часть ${Math.floor(i/batchSize) + 1}: ${batch.length} товаров`);
       await new Promise(resolve => setTimeout(resolve, 200));
     }
+    
+    logCommand(userId, '/goods', 'success', `всего отправлено:${sentCount} товаров`);
     return;
   }
 
+  // === /CHANGES ===
   if (text === '/changes') {
-    if (!checkRateLimit(userId, '/changes')) return;
+    logCommand(userId, '/changes', 'start');
     
+    if (!checkRateLimit(userId, '/changes')) return;
+
     const categories = user.selected_categories || [];
     if (!categories.length) {
+      logCommand(userId, '/changes', 'error', 'нет категорий');
       await sendMessage(chatId, '❌ Категории не выбраны');
       return;
     }
@@ -519,20 +672,35 @@ async function handleMessage(message) {
     const changes = allChanges.filter(c => categories.includes(c.category));
 
     if (!changes.length) {
+      logCommand(userId, '/changes', 'warning', 'нет изменений');
       await sendMessage(chatId, '📭 Сегодня нет изменений в выбранных категориях');
       return;
     }
 
+    logCommand(userId, '/changes', 'success', `найдено изменений:${changes.length}`);
     await sendMessage(chatId, `📊 Найдено изменений: ${changes.length}`);
 
-    for (const ch of changes) {
+    for (let i = 0; i < changes.length; i++) {
+      const ch = changes[i];
       await sendMessage(chatId, formatProductFull(ch));
-      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      if (i < changes.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      if ((i + 1) % 10 === 0) {
+        logCommand(userId, '/changes', 'success', `отправлено ${i + 1}/${changes.length}`);
+      }
     }
+    
+    logCommand(userId, '/changes', 'success', `все ${changes.length} изменений отправлены`);
     return;
   }
 
+  // === /HELP ===
   if (text === '/help') {
+    logCommand(userId, '/help', 'start');
+    
     const commands = [
       '📋 <b>Доступные команды:</b>',
       '',
@@ -547,9 +715,12 @@ async function handleMessage(message) {
     ];
     
     await sendMessage(chatId, commands.join('\n'));
+    logCommand(userId, '/help', 'success');
     return;
   }
 
+  // === НЕИЗВЕСТНАЯ КОМАНДА ===
+  logCommand(userId, text, 'warning', 'неизвестная команда');
   await sendMessage(chatId, '❓ Неизвестная команда. /help');
 }
 
@@ -560,8 +731,9 @@ async function handleCallback(query) {
   const msg = query.message;
   const fromId = query.from.id;
 
-  console.log('📞 Callback:', data);
+  console.log(`${colors.magenta}📞 Callback:${colors.reset} ${data} ${colors.cyan}from:${fromId}${colors.reset}`);
 
+  // === ДОБАВЛЕНИЕ КАТЕГОРИИ ===
   if (data.startsWith('add_cat_')) {
     const parts = data.split('_');
     const userId = parseInt(parts[2]);
@@ -603,9 +775,11 @@ async function handleCallback(query) {
     });
 
     await answerCallback(query.id, `✅ ${category} добавлена`);
+    console.log(`${colors.green}✅ Категория добавлена:${colors.reset} ${category} для ${fromId}`);
     return;
   }
 
+  // === ЗАВЕРШЕНИЕ ВЫБОРА ===
   if (data.startsWith('finish_selection_')) {
     const userId = parseInt(data.replace('finish_selection_', ''));
     
@@ -647,9 +821,11 @@ async function handleCallback(query) {
     );
 
     await answerCallback(query.id, '✅ Выбор завершён');
+    console.log(`${colors.green}✅ Выбор завершён для ${fromId}, категорий:${selected.length}${colors.reset}`);
     return;
   }
 
+  // === АДМИНСКИЕ КНОПКИ ===
   if (fromId != ADMIN_CHAT_ID) {
     await answerCallback(query.id, '⛔ Нет прав');
     return;
@@ -664,6 +840,8 @@ async function handleCallback(query) {
       return;
     }
 
+    console.log(`${colors.green}✅ Подтверждаю пользователя ${userId}${colors.reset}`);
+    
     await updateUserStatus(userId, 'approved', 'admin');
     
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
@@ -709,6 +887,7 @@ async function handleCallback(query) {
         await sendMessage(targetUser.chat_id, '⛔ <b>Доступ отклонён</b>');
       }
       await answerCallback(query.id, '❌ Отклонено');
+      console.log(`${colors.red}❌ Пользователь ${userId} отклонён${colors.reset}`);
     }
     return;
   }
@@ -735,6 +914,7 @@ async function handleCallback(query) {
         await sendMessage(targetUser.chat_id, '🚫 <b>Вы заблокированы</b>');
       }
       await answerCallback(query.id, '🚫 Заблокировано');
+      console.log(`${colors.red}🚫 Пользователь ${userId} заблокирован${colors.reset}`);
     }
     return;
   }
@@ -754,7 +934,7 @@ export async function handleTelegramUpdate(update) {
     if (update.message) await handleMessage(update.message);
     if (update.callback_query) await handleCallback(update.callback_query);
   } catch (err) {
-    console.error('❌ Update error:', err);
+    console.error(`${colors.red}❌ Update error:${colors.reset}`, err);
   }
 }
 
@@ -774,5 +954,4 @@ export async function sendTelegramMessage(message) {
   return await sendMessage(ADMIN_CHAT_ID, message);
 }
 
-// ВАЖНО: реэкспортируем для priceUpdater.js
 export { notifyPriceChange };
