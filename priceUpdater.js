@@ -1,5 +1,5 @@
 import db from './database.js';
-import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
+import { sendTelegramMessage, formatPriceChangeNotification, notifyPriceChange } from './telegramBot.js';
 
 async function insertPriceRecord(code, name, price, timestamp) {
   await db.execute({
@@ -41,18 +41,36 @@ async function saveProductData(product, timestamp) {
 
     const lastPrice = lastRecord.rows[0]?.price;
 
+    // Создаем объект товара с категорией для уведомлений
+    const productWithCategory = {
+      ...product,
+      code,
+      category
+    };
+
     if (todayRecord.rows.length === 0) {
       console.log(`📝 Первая запись за ${today} для ${code}`);
       await insertPriceRecord(code, product.name, price, now);
       
       if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
+        console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
+        
         const notification = formatPriceChangeNotification(
-          { ...product, code }, 
+          productWithCategory, 
           lastPrice, 
-          price,
-          'изменилась (первая запись дня)'
+          price
         );
+        
+        // Отправка админу
         await sendTelegramMessage(notification);
+        
+        // 🔥 ОТПРАВКА ВСЕМ ПОДПИСАННЫМ НА КАТЕГОРИЮ
+        await notifyPriceChange(
+          productWithCategory,
+          lastPrice,
+          price,
+          formatPriceChangeNotification
+        );
       }
       
     } else {
@@ -61,14 +79,24 @@ async function saveProductData(product, timestamp) {
         await insertPriceRecord(code, product.name, price, now);
         
         const notification = formatPriceChangeNotification(
-          { ...product, code }, 
+          productWithCategory, 
           lastPrice, 
           price
         );
+        
+        // Отправка админу
         await sendTelegramMessage(notification);
         
+        // 🔥 ОТПРАВКА ВСЕМ ПОДПИСАННЫМ НА КАТЕГОРИЮ
+        await notifyPriceChange(
+          productWithCategory,
+          lastPrice,
+          price,
+          formatPriceChangeNotification
+        );
+        
       } else {
-        console.log(`⏭️ Цена не изменилась для ${code}, пропускаем`);
+        // Ничего не логируем для каждого товара (тишина)
       }
     }
 
