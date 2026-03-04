@@ -240,6 +240,7 @@ export async function updateAllPrices() {
     let totalNewRecords = 0;
     let totalErrors = 0;
 
+    // Для статистики по категориям
     const categoryStats = {};
 
     const processBatch = async (batch, batchIndex) => {
@@ -331,8 +332,9 @@ export async function updateAllPrices() {
               category = product.categories[product.categories.length - 1].name;
             }
             
+            // Инициализируем статистику по категории
             if (!categoryStats[category]) {
-              categoryStats[category] = { total: 0, changed: 0 };
+              categoryStats[category] = { total: 0, changed: 0, names: [] };
             }
             categoryStats[category].total++;
             
@@ -440,7 +442,7 @@ export async function updateAllPrices() {
     // ========== ОТПРАВКА СТАТИСТИКИ АДМИНУ ==========
     let adminMessage = `📊 <b>ОБНОВЛЕНИЕ ЦЕН ЗАВЕРШЕНО</b>\n\n`;
     adminMessage += `📦 Всего товаров: ${totalProcessed}\n`;
-    adminMessage += `🔄 Изменений: ${totalChanged}\n`;
+    adminMessage += `🔄 Изменений цен: ${totalChanged}\n`;
     adminMessage += `📝 Новых записей: ${totalNewRecords}\n`;
     adminMessage += `❌ Ошибок: ${totalErrors}\n`;
     adminMessage += `⏱️ Время: ${totalTime} сек\n\n`;
@@ -448,16 +450,28 @@ export async function updateAllPrices() {
     if (Object.keys(categoryStats).length > 0) {
       adminMessage += `📊 <b>Статистика по категориям:</b>\n`;
       
+      // Сортируем категории по количеству изменений (сначала те, где больше изменений)
       const sortedCategories = Object.entries(categoryStats)
-        .sort((a, b) => b[1].total - a[1].total);
+        .sort((a, b) => b[1].changed - a[1].changed);
       
       sortedCategories.forEach(([category, stats]) => {
-        const changePercent = ((stats.changed / stats.total) * 100).toFixed(1);
-        adminMessage += `\n<b>${category}:</b>\n`;
-        adminMessage += `   📦 Всего: ${stats.total} товаров\n`;
+        const changePercent = stats.total > 0 ? ((stats.changed / stats.total) * 100).toFixed(1) : '0.0';
+        
+        // Добавляем иконку в зависимости от наличия изменений
+        const icon = stats.changed > 0 ? '🔄' : '⏭️';
+        
+        adminMessage += `\n${icon} <b>${category}</b>\n`;
+        adminMessage += `   📦 Всего товаров: ${stats.total}\n`;
         adminMessage += `   🔄 Изменений: ${stats.changed} (${changePercent}%)\n`;
       });
+      
+      // Добавляем итоговую строку с общим количеством категорий
+      const categoriesWithChanges = Object.values(categoryStats).filter(s => s.changed > 0).length;
+      adminMessage += `\n📌 Категорий с изменениями: ${categoriesWithChanges} из ${Object.keys(categoryStats).length}`;
     }
+    
+    // Добавляем временную метку
+    adminMessage += `\n\n🕐 ${new Date().toLocaleString('ru-RU')}`;
     
     await sendTelegramMessage(adminMessage);
     // =================================================
