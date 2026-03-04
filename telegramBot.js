@@ -1,3 +1,4 @@
+// telegramBot.js
 import fetch from 'node-fetch';
 import db from './database.js';
 import {
@@ -65,8 +66,8 @@ function checkRateLimit(userId, command) {
   const lastTime = userLastCommand.get(key) || 0;
   
   const limits = {
-    '/changes': 10000,
-    '/goods': 5000,
+    '/changes': 5000,
+    '/goods': 3000,
     '/status': 2000,
     'default': 1000
   };
@@ -75,10 +76,11 @@ function checkRateLimit(userId, command) {
   if (now - lastTime < limit) return false;
   
   userLastCommand.set(key, now);
-  if (userLastCommand.size > 1000) {
-    const oldKeys = [...userLastCommand.keys()].filter(k => now - userLastCommand.get(k) > 60000);
-    oldKeys.forEach(k => userLastCommand.delete(k));
-  }
+  
+  // Очистка старых записей
+  const oldKeys = [...userLastCommand.keys()].filter(k => now - userLastCommand.get(k) > 60000);
+  oldKeys.forEach(k => userLastCommand.delete(k));
+  
   return true;
 }
 
@@ -237,7 +239,7 @@ export function formatProductFull(product) {
 ${circleEmoji} <b>${product.product_name}</b>
 📋 Код: <code>${product.product_code}</code>
 💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
-💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change)} (${product.percent}%)
+💰 <b>Стало:</b} ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change)} (${product.percent}%)
 💳 РЦ в рассрочку: ${installmentPrice} руб.
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>
@@ -340,16 +342,17 @@ async function handleMessage(message) {
   const lastName = message.from.last_name;
 
   console.log(`📨 ${text} от ${userId}`);
-  // 🔍 ДОБАВЬТЕ ЭТО
-  console.log(`🔍 Проверка пользователя ${userId}: ищем в БД...`);
   
   const user = await getUser(userId);
-  
-  console.log(`🔍 Результат getUser:`, user ? 'найден' : 'НЕ НАЙДЕН');
-  if (user) {
-    console.log(`🔍 Статус: ${user.status}, категорий: ${user.selected_categories?.length || 0}`);
+
+  // === СКРЫТАЯ КОМАНДА ДЛЯ ПРОВЕРКИ АДМИНСТВА (работает всегда) ===
+  if (text === '/isAdmin') {
+    const isAdmin = (userId == ADMIN_CHAT_ID);
+    await sendMessage(chatId, isAdmin ? '✅ Да' : '❌ Нет');
+    return;
   }
-  // === КОМАНДЫ АДМИНА (доступны всегда) ===
+
+  // === КОМАНДЫ АДМИНА (доступны только админу) ===
   if (userId == ADMIN_CHAT_ID) {
     
     if (text === '/help_broadcast') {
@@ -420,13 +423,6 @@ async function handleMessage(message) {
       await sendMessage(chatId, formatSubscriberStats(stats));
       return;
     }
-
-    // Скрытая команда для проверки админства
-if (text === '/isAdmin') {
-  const isAdmin = (userId == ADMIN_CHAT_ID);
-  await sendMessage(chatId, isAdmin ? '✅ Да' : '❌ Нет');
-  return;
-}
   }
 
   // === ОБРАБОТКА /START ===
@@ -481,149 +477,34 @@ if (text === '/isAdmin') {
   }
 
   if (text === '/goods') {
-  console.log('='.repeat(50));
-  console.log(`🔍 [GOODS] Начало обработки команды /goods от пользователя ${userId}`);
-  console.log(`🔍 [GOODS] Время: ${new Date().toISOString()}`);
-  
-  // Проверка rate limit
-  console.log(`🔍 [GOODS] Проверка rate limit для ${userId}...`);
-  if (!checkRateLimit(userId, '/goods')) {
-    console.log(`❌ [GOODS] Rate limit сработал для ${userId}`);
-    await sendMessage(chatId, '⏳ Слишком частые запросы. Подождите несколько секунд.');
-    return;
-  }
-  console.log(`✅ [GOODS] Rate limit пройден`);
-
-  // Проверка пользователя
-  console.log(`🔍 [GOODS] Проверка пользователя ${userId}...`);
-  const user = await getUser(userId);
-  console.log(`🔍 [GOODS] Результат getUser:`, user ? 'найден' : 'НЕ НАЙДЕН');
-  
-  if (!user) {
-    console.log(`❌ [GOODS] Пользователь ${userId} не найден в БД`);
-    await sendMessage(chatId, '❌ Пользователь не найден. Используйте /start');
-    return;
-  }
-  
-  console.log(`🔍 [GOODS] Статус пользователя: ${user.status}`);
-  if (user.status !== 'approved') {
-    console.log(`❌ [GOODS] Пользователь ${userId} не подтвержден (статус: ${user.status})`);
-    await sendMessage(chatId, '❌ Ваш аккаунт не подтвержден');
-    return;
-  }
-
-  // Проверка категорий
-  console.log(`🔍 [GOODS] Категории пользователя:`, user.selected_categories || []);
-  const categories = user.selected_categories || [];
-  
-  if (!categories.length) {
-    console.log(`❌ [GOODS] У пользователя ${userId} нет выбранных категорий`);
-    await sendMessage(chatId, '❌ Категории не выбраны. Используйте /start для выбора категорий');
-    return;
-  }
-  console.log(`✅ [GOODS] Категории найдены: ${categories.length} шт.`);
-
-  // Получение данных с API
-  console.log(`🔍 [GOODS] Запрос к API /api/bot/products...`);
-  const startTime = Date.now();
-  
-  try {
-    const data = await getProductsFromServer();
-    const apiTime = Date.now() - startTime;
-    console.log(`🔍 [GOODS] API ответил за ${apiTime}мс`);
+    if (!checkRateLimit(userId, '/goods')) return;
     
-    if (!data) {
-      console.log(`❌ [GOODS] API вернул null или undefined`);
-      await sendMessage(chatId, '❌ Ошибка получения данных с сервера');
-      return;
-    }
-    
-    console.log(`🔍 [GOODS] API ответ:`, {
-      hasProducts: !!data.products,
-      productsCount: data.products?.length || 0,
-      today: data.today,
-      yesterday: data.yesterday
-    });
-    
-    if (!data.products || !Array.isArray(data.products)) {
-      console.log(`❌ [GOODS] data.products отсутствует или не массив`);
-      await sendMessage(chatId, '❌ Ошибка формата данных с сервера');
+    const categories = user.selected_categories || [];
+    if (!categories.length) {
+      await sendMessage(chatId, '❌ Категории не выбраны');
       return;
     }
 
-    // Фильтрация товаров по категориям
-    console.log(`🔍 [GOODS] Фильтрация товаров по категориям:`, categories);
-    const products = data.products.filter(p => categories.includes(p.category));
-    
-    console.log(`🔍 [GOODS] Результаты фильтрации:`, {
-      всего_товаров: data.products.length,
-      подходящих: products.length,
-      категории_в_товарах: [...new Set(data.products.map(p => p.category))],
-      категории_пользователя: categories
-    });
-
-    if (products.length === 0) {
-      console.log(`❌ [GOODS] Нет товаров в выбранных категориях`);
-      
-      // Проверим, есть ли вообще товары с такими категориями
-      const availableCategories = [...new Set(data.products.map(p => p.category))];
-      const missingCategories = categories.filter(c => !availableCategories.includes(c));
-      
-      if (missingCategories.length > 0) {
-        console.log(`❌ [GOODS] Следующие категории не найдены в товарах:`, missingCategories);
-        await sendMessage(chatId, 
-          `📭 Нет товаров в выбранных категориях.\n\n` +
-          `⚠️ Следующие категории пусты:\n${missingCategories.map(c => `• ${c}`).join('\n')}`
-        );
-      } else {
-        await sendMessage(chatId, '📭 В выбранных категориях нет товаров');
-      }
+    const products = await getProductsByCategory(categories);
+    if (!products.length) {
+      await sendMessage(chatId, '📭 Нет товаров');
       return;
     }
 
-    console.log(`✅ [GOODS] Найдено товаров: ${products.length}`);
-
-    // Проверка длины сообщения
-    const productNames = products.map(p => `• ${p.name}`).join('\n');
-    const header = `📦 Товаров: ${products.length}\n\n`;
-    const fullMessage = header + productNames;
+    // Разбиваем на части по 50 товаров
+    const batchSize = 50;
+    await sendMessage(chatId, `📦 Найдено товаров: ${products.length}. Отправляю список...`);
     
-    console.log(`📏 [GOODS] Длина сообщения: ${fullMessage.length} символов`);
-    
-    if (fullMessage.length > 4000) {
-      console.log(`⚠️ [GOODS] Сообщение слишком длинное (${fullMessage.length} > 4000), отправляем частями`);
+    for (let i = 0; i < products.length; i += batchSize) {
+      const batch = products.slice(i, i + batchSize);
+      const list = batch.map(p => `• ${p.name}`).join('\n');
+      const header = `📋 Часть ${Math.floor(i/batchSize) + 1}/${Math.ceil(products.length/batchSize)}:\n\n`;
       
-      await sendMessage(chatId, `📦 Найдено товаров: ${products.length}. Отправляю список частями...`);
-      
-      // Разбиваем на части по 50 товаров
-      const batchSize = 50;
-      for (let i = 0; i < products.length; i += batchSize) {
-        const batch = products.slice(i, i + batchSize);
-        const batchNames = batch.map(p => `• ${p.name}`).join('\n');
-        const batchHeader = `📋 Часть ${Math.floor(i/batchSize) + 1}/${Math.ceil(products.length/batchSize)} (${i+1}-${Math.min(i+batchSize, products.length)}):\n\n`;
-        const batchMessage = batchHeader + batchNames;
-        
-        console.log(`📏 [GOODS] Часть ${Math.floor(i/batchSize) + 1}: ${batchMessage.length} символов`);
-        await sendMessage(chatId, batchMessage);
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-      
-      console.log(`✅ [GOODS] Все части отправлены`);
-    } else {
-      console.log(`✅ [GOODS] Отправка полного сообщения...`);
-      await sendMessage(chatId, fullMessage);
+      await sendMessage(chatId, header + list);
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
-
-    console.log(`✅ [GOODS] Команда /goods успешно выполнена для ${userId}`);
-    
-  } catch (error) {
-    console.error(`❌ [GOODS] Ошибка при выполнении команды:`, error);
-    await sendMessage(chatId, '❌ Произошла ошибка при получении списка товаров');
+    return;
   }
-  
-  console.log('='.repeat(50));
-  return;
-}
 
   if (text === '/changes') {
     if (!checkRateLimit(userId, '/changes')) return;
@@ -681,7 +562,6 @@ async function handleCallback(query) {
 
   console.log('📞 Callback:', data);
 
-  // === ДОБАВЛЕНИЕ КАТЕГОРИИ ===
   if (data.startsWith('add_cat_')) {
     const parts = data.split('_');
     const userId = parseInt(parts[2]);
@@ -726,7 +606,6 @@ async function handleCallback(query) {
     return;
   }
 
-  // === ЗАВЕРШЕНИЕ ВЫБОРА ===
   if (data.startsWith('finish_selection_')) {
     const userId = parseInt(data.replace('finish_selection_', ''));
     
@@ -771,7 +650,6 @@ async function handleCallback(query) {
     return;
   }
 
-  // === АДМИНСКИЕ КНОПКИ ===
   if (fromId != ADMIN_CHAT_ID) {
     await answerCallback(query.id, '⛔ Нет прав');
     return;
@@ -786,8 +664,6 @@ async function handleCallback(query) {
       return;
     }
 
-    console.log(`✅ Подтверждаю пользователя ${userId}, chat_id: ${targetUser.chat_id}`);
-    
     await updateUserStatus(userId, 'approved', 'admin');
     
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
@@ -800,12 +676,10 @@ async function handleCallback(query) {
       })
     });
 
-    const sent = await sendMessage(targetUser.chat_id, 
+    await sendMessage(targetUser.chat_id, 
       '✅ <b>Ваш запрос одобрен!</b>\n\n' +
       'Теперь выберите категории товаров для отслеживания:'
     );
-    
-    console.log(`📤 Сообщение отправлено:`, sent ? 'ok' : 'fail');
     
     await showCategoryList(targetUser.chat_id, userId);
     
@@ -899,3 +773,6 @@ export function setupBotEndpoints(app, authenticateToken) {
 export async function sendTelegramMessage(message) {
   return await sendMessage(ADMIN_CHAT_ID, message);
 }
+
+// ВАЖНО: реэкспортируем для priceUpdater.js
+export { notifyPriceChange };
