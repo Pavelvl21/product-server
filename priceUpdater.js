@@ -240,8 +240,8 @@ export async function updateAllPrices() {
     let totalNewRecords = 0;
     let totalErrors = 0;
 
-    // Для статистики по категориям
-    const categoryStats = {};
+    // Для сбора изменений по категориям
+    const categoryChanges = {};
 
     const processBatch = async (batch, batchIndex) => {
       const batchNum = batchIndex + 1;
@@ -332,12 +332,6 @@ export async function updateAllPrices() {
               category = product.categories[product.categories.length - 1].name;
             }
             
-            // Инициализируем статистику по категории
-            if (!categoryStats[category]) {
-              categoryStats[category] = { total: 0, changed: 0, names: [] };
-            }
-            categoryStats[category].total++;
-            
             const today = new Date().toISOString().split('T')[0];
             
             const todayRecord = await db.execute({
@@ -361,13 +355,35 @@ export async function updateAllPrices() {
             
             if (isChanged) {
               batchChanged++;
-              categoryStats[category].changed++;
+              
+              // Сохраняем информацию об изменении для категории
+              if (!categoryChanges[category]) {
+                categoryChanges[category] = {
+                  total: 0,
+                  increases: 0,
+                  decreases: 0,
+                  totalChangePercent: 0,
+                  products: []
+                };
+              }
+              
+              categoryChanges[category].total++;
+              
+              const changePercent = ((currentPrice - lastPrice) / lastPrice * 100);
+              
+              if (currentPrice > lastPrice) {
+                categoryChanges[category].increases++;
+              } else {
+                categoryChanges[category].decreases++;
+              }
+              
+              categoryChanges[category].totalChangePercent += Math.abs(changePercent);
               
               const changeSymbol = currentPrice > lastPrice ? '⬆️' : '⬇️';
               const changeValue = (currentPrice - lastPrice).toFixed(2);
-              const changePercent = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(1);
+              const changePercentFormatted = changePercent.toFixed(1);
               
-              console.log(`   ${changeSymbol} [${batchProcessed}/${products.length}] ${product.code}: ${lastPrice} → ${currentPrice} (${changeValue} руб, ${changePercent}%)`);
+              console.log(`   ${changeSymbol} [${batchProcessed}/${products.length}] ${product.code}: ${lastPrice} → ${currentPrice} (${changeValue} руб, ${changePercentFormatted}%)`);
             }
             
             if (todayRecord.rows.length === 0) {
@@ -441,37 +457,36 @@ export async function updateAllPrices() {
     
     // ========== ОТПРАВКА СТАТИСТИКИ АДМИНУ ==========
     let adminMessage = `📊 <b>ОБНОВЛЕНИЕ ЦЕН ЗАВЕРШЕНО</b>\n\n`;
+    adminMessage += `📅 ${new Date().toLocaleDateString('ru-RU')}\n\n`;
     adminMessage += `📦 Всего товаров: ${totalProcessed}\n`;
-    adminMessage += `🔄 Изменений цен: ${totalChanged}\n`;
+    adminMessage += `🔄 Изменений: ${totalChanged}\n`;
     adminMessage += `📝 Новых записей: ${totalNewRecords}\n`;
     adminMessage += `❌ Ошибок: ${totalErrors}\n`;
     adminMessage += `⏱️ Время: ${totalTime} сек\n\n`;
     
-    if (Object.keys(categoryStats).length > 0) {
-      adminMessage += `📊 <b>Статистика по категориям:</b>\n`;
+    if (Object.keys(categoryChanges).length > 0) {
+      adminMessage += `📊 <b>ИЗМЕНЕНИЯ ПО КАТЕГОРИЯМ:</b>\n\n`;
       
-      // Сортируем категории по количеству изменений (сначала те, где больше изменений)
-      const sortedCategories = Object.entries(categoryStats)
-        .sort((a, b) => b[1].changed - a[1].changed);
+      // Сортируем категории по количеству изменений
+      const sortedCategories = Object.entries(categoryChanges)
+        .sort((a, b) => b[1].total - a[1].total);
       
-      sortedCategories.forEach(([category, stats]) => {
-        const changePercent = stats.total > 0 ? ((stats.changed / stats.total) * 100).toFixed(1) : '0.0';
+      for (const [category, stats] of sortedCategories) {
+        const avgChange = stats.total > 0 ? (stats.totalChangePercent / stats.total).toFixed(1) : '0.0';
         
-        // Добавляем иконку в зависимости от наличия изменений
-        const icon = stats.changed > 0 ? '🔄' : '⏭️';
-        
-        adminMessage += `\n${icon} <b>${category}</b>\n`;
-        adminMessage += `   📦 Всего товаров: ${stats.total}\n`;
-        adminMessage += `   🔄 Изменений: ${stats.changed} (${changePercent}%)\n`;
-      });
+        adminMessage += `<b>${category}</b>\n`;
+        adminMessage += `   🔄 Всего изменений: ${stats.total}\n`;
+        adminMessage += `   ⬆️ Повышений: ${stats.increases}\n`;
+        adminMessage += `   ⬇️ Снижений: ${stats.decreases}\n`;
+        adminMessage += `   📊 Среднее изменение: ${avgChange}%\n\n`;
+      }
       
-      // Добавляем итоговую строку с общим количеством категорий
-      const categoriesWithChanges = Object.values(categoryStats).filter(s => s.changed > 0).length;
-      adminMessage += `\n📌 Категорий с изменениями: ${categoriesWithChanges} из ${Object.keys(categoryStats).length}`;
+      // Добавляем общую статистику по категориям
+      const categoriesWithChanges = Object.keys(categoryChanges).length;
+      adminMessage += `📌 Категорий с изменениями: ${categoriesWithChanges}`;
+    } else {
+      adminMessage += `📭 Изменений цен не обнаружено`;
     }
-    
-    // Добавляем временную метку
-    adminMessage += `\n\n🕐 ${new Date().toLocaleString('ru-RU')}`;
     
     await sendTelegramMessage(adminMessage);
     // =================================================
