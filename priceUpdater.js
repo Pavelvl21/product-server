@@ -177,7 +177,9 @@ export async function updatePricesForNewCode(code) {
 
 export async function updateAllPrices() {
   const startTime = Date.now();
-  console.log('🚀 Начинаем ускоренное обновление цен:', new Date().toLocaleString());
+  console.log('\n' + '='.repeat(60));
+  console.log(`🚀 НАЧАЛО ОБНОВЛЕНИЯ ЦЕН: ${new Date().toLocaleString()}`);
+  console.log('='.repeat(60));
 
   try {
     const codesResult = await db.execute('SELECT code FROM product_codes');
@@ -199,16 +201,22 @@ export async function updateAllPrices() {
     }
     
     console.log(`📊 Будет обработано ${batches.length} пачек по ${BATCH_SIZE} кодов`);
+    console.log('-'.repeat(60));
 
     let processedBatches = 0;
-    let totalUpdated = 0;
+    let totalProcessed = 0;
+    let totalChanged = 0;
     let totalNewRecords = 0;
+    let totalErrors = 0;
+
+    // Для статистики по категориям
+    const categoryStats = {};
 
     const processBatch = async (batch, batchIndex) => {
       const batchNum = batchIndex + 1;
       const batchStartTime = new Date();
       
-      console.log(`📤 [Пачка ${batchNum}/${batches.length}] Отправка ${batch.length} кодов`);
+      console.log(`\n📤 [Пачка ${batchNum}/${batches.length}] Отправка ${batch.length} кодов...`);
 
       try {
         const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
@@ -236,9 +244,10 @@ export async function updateAllPrices() {
 
         if (products.length === 0) {
           console.log(`⚠️ [Пачка ${batchNum}] Нет данных от API`);
-          return { updated: 0, newRecords: 0 };
+          return { processed: 0, changed: 0, newRecords: 0, errors: 0 };
         }
 
+        // Получаем данные рассрочки
         const productsForPartlyPay = [];
         for (const product of products) {
           productsForPartlyPay.push({
@@ -279,18 +288,62 @@ export async function updateAllPrices() {
           }
         }
 
+        let batchProcessed = 0;
+        let batchChanged = 0;
         let batchNewRecords = 0;
+        let batchErrors = 0;
         
         for (const product of products) {
           try {
+            batchProcessed++;
+            
+            // Получаем категорию для статистики
+            let category = 'Товары';
+            if (product.categories && product.categories.length > 0) {
+              category = product.categories[product.categories.length - 1].name;
+            }
+            
+            // Инициализируем статистику по категории
+            if (!categoryStats[category]) {
+              categoryStats[category] = { total: 0, changed: 0 };
+            }
+            categoryStats[category].total++;
+            
             const today = new Date().toISOString().split('T')[0];
             
+            // Проверяем, была ли сегодня запись
             const todayRecord = await db.execute({
               sql: `SELECT id FROM price_history 
                     WHERE product_code = ? AND DATE(updated_at) = ? 
                     LIMIT 1`,
               args: [product.code.toString(), today]
             });
+            
+            // Получаем последнюю цену
+            const lastRecord = await db.execute({
+              sql: `SELECT price FROM price_history 
+                    WHERE product_code = ? 
+                    ORDER BY updated_at DESC LIMIT 1`,
+              args: [product.code.toString()]
+            });
+            
+            const lastPrice = lastRecord.rows[0]?.price;
+            const currentPrice = parseFloat(product.packPrice || product.price);
+            
+            // Проверяем, изменилась ли цена
+            const isChanged = lastPrice !== undefined && Math.abs(currentPrice - lastPrice) > 0.01;
+            
+            if (isChanged) {
+              batchChanged++;
+              categoryStats[category].changed++;
+              
+              // Логируем только изменения
+              const changeSymbol = currentPrice > lastPrice ? '⬆️' : '⬇️';
+              const changeValue = (currentPrice - lastPrice).toFixed(2);
+              const changePercent = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(1);
+              
+              console.log(`   ${changeSymbol} [${batchProcessed}/${products.length}] ${product.code}: ${lastPrice} → ${currentPrice} (${changeValue} руб, ${changePercent}%)`);
+            }
             
             if (todayRecord.rows.length === 0) {
               batchNewRecords++;
@@ -304,20 +357,29 @@ export async function updateAllPrices() {
             };
             
             await saveProductData(productWithPartly, batchStartTime);
+            
           } catch (saveError) {
-            console.error(`❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
+            batchErrors++;
+            console.error(`   ❌ Ошибка сохранения товара ${product.code}:`, saveError.message);
           }
         }
 
-        console.log(`✅ [Пачка ${batchNum}] Успешно обработана`);
-        return { updated: products.length, newRecords: batchNewRecords };
+        console.log(`✅ [Пачка ${batchNum}] Итог: обработано ${batchProcessed}, изменений: ${batchChanged}, новых записей: ${batchNewRecords}, ошибок: ${batchErrors}`);
+        
+        return { 
+          processed: batchProcessed, 
+          changed: batchChanged, 
+          newRecords: batchNewRecords,
+          errors: batchErrors 
+        };
 
       } catch (error) {
-        console.error(`❌ [Пачка ${batchNum}] Ошибка:`, error.message);
-        return { updated: 0, newRecords: 0 };
+        console.error(`❌ [Пачка ${batchNum}] Критическая ошибка:`, error.message);
+        return { processed: 0, changed: 0, newRecords: 0, errors: batch.length };
       }
     };
 
+    // Запускаем параллельную обработку
     for (let i = 0; i < batches.length; i += CONCURRENT_LIMIT) {
       const currentBatches = batches.slice(i, i + CONCURRENT_LIMIT);
       console.log(`\n🔄 Запуск группы из ${currentBatches.length} параллельных пачек`);
@@ -327,22 +389,61 @@ export async function updateAllPrices() {
       );
       
       results.forEach(result => {
-        totalUpdated += result.updated || 0;
+        totalProcessed += result.processed || 0;
+        totalChanged += result.changed || 0;
         totalNewRecords += result.newRecords || 0;
+        totalErrors += result.errors || 0;
       });
       
       processedBatches += currentBatches.length;
       
-      console.log(`📊 Прогресс: ${processedBatches}/${batches.length} пачек`);
+      // Показываем прогресс
+      const percentComplete = Math.round((processedBatches / batches.length) * 100);
+      console.log(`\n📊 Прогресс: ${processedBatches}/${batches.length} пачек (${percentComplete}%)`);
+      console.log(`   Обработано товаров: ${totalProcessed}, изменений: ${totalChanged}, ошибок: ${totalErrors}`);
     }
 
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
     
-    console.log('\n🎉 Обновление завершено!');
+    // Финальная статистика
+    console.log('\n' + '='.repeat(60));
+    console.log(`🏁 **ОБНОВЛЕНИЕ ЗАВЕРШЕНО**`);
+    console.log('='.repeat(60));
+    console.log(`📊 **ИТОГОВАЯ СТАТИСТИКА**`);
+    console.log('-'.repeat(40));
+    console.log(`✅ Всего обработано: ${totalProcessed} товаров`);
+    console.log(`🔄 Цены изменились: ${totalChanged} товаров`);
+    console.log(`📝 Новых записей: ${totalNewRecords}`);
+    console.log(`❌ Ошибок: ${totalErrors}`);
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
+    
+    // Статистика по категориям
+    if (Object.keys(categoryStats).length > 0) {
+      console.log('\n📊 **СТАТИСТИКА ПО КАТЕГОРИЯМ:**');
+      console.log('-'.repeat(40));
+      
+      const sortedCategories = Object.entries(categoryStats)
+        .sort((a, b) => b[1].total - a[1].total);
+      
+      sortedCategories.forEach(([category, stats]) => {
+        const changePercent = ((stats.changed / stats.total) * 100).toFixed(1);
+        const barLength = Math.round((stats.changed / stats.total) * 20);
+        const bar = '🟩'.repeat(barLength) + '⬜'.repeat(20 - barLength);
+        
+        console.log(`  ${category}:`);
+        console.log(`    📦 Всего: ${stats.total} товаров`);
+        console.log(`    🔄 Изменений: ${stats.changed} (${changePercent}%)`);
+        console.log(`    ${bar}`);
+      });
+    }
+    
+    console.log('='.repeat(60));
+    console.log(`🕐 Завершено: ${new Date().toLocaleString()}`);
+    console.log('='.repeat(60));
 
   } catch (error) {
-    console.error('❌ Глобальная ошибка при обновлении цен:', error);
+    console.error('\n❌ ГЛОБАЛЬНАЯ ОШИБКА ПРИ ОБНОВЛЕНИИ ЦЕН:');
+    console.error(error);
     
     await sendTelegramMessage(`
 ⚠️ <b>Ошибка при массовом обновлении</b>
