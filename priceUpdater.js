@@ -240,8 +240,8 @@ export async function updateAllPrices() {
     let totalNewRecords = 0;
     let totalErrors = 0;
 
-    // Для сбора изменений по категориям (как в /changes, но сгруппированные)
-    const categoryStats = {};
+    // Для сбора изменений в этом обновлении (по категориям)
+    const currentUpdateStats = {};
 
     const processBatch = async (batch, batchIndex) => {
       const batchNum = batchIndex + 1;
@@ -356,50 +356,25 @@ export async function updateAllPrices() {
             if (isChanged) {
               batchChanged++;
               
-              // Сохраняем детальную информацию об изменении для категории
-              if (!categoryStats[category]) {
-                categoryStats[category] = {
+              // Сохраняем статистику для текущего обновления
+              if (!currentUpdateStats[category]) {
+                currentUpdateStats[category] = {
                   total: 0,
                   increases: 0,
-                  decreases: 0,
-                  totalIncreasePercent: 0,
-                  totalDecreasePercent: 0,
-                  maxIncrease: { percent: 0, name: '', code: '' },
-                  maxDecrease: { percent: 0, name: '', code: '' }
+                  decreases: 0
                 };
               }
               
-              categoryStats[category].total++;
-              
-              const changePercent = ((currentPrice - lastPrice) / lastPrice) * 100;
-              
+              currentUpdateStats[category].total++;
               if (currentPrice > lastPrice) {
-                categoryStats[category].increases++;
-                categoryStats[category].totalIncreasePercent += changePercent;
-                
-                if (changePercent > categoryStats[category].maxIncrease.percent) {
-                  categoryStats[category].maxIncrease = {
-                    percent: changePercent,
-                    name: product.name,
-                    code: product.code
-                  };
-                }
+                currentUpdateStats[category].increases++;
               } else {
-                categoryStats[category].decreases++;
-                categoryStats[category].totalDecreasePercent += Math.abs(changePercent);
-                
-                if (Math.abs(changePercent) > categoryStats[category].maxDecrease.percent) {
-                  categoryStats[category].maxDecrease = {
-                    percent: Math.abs(changePercent),
-                    name: product.name,
-                    code: product.code
-                  };
-                }
+                currentUpdateStats[category].decreases++;
               }
               
               const changeSymbol = currentPrice > lastPrice ? '⬆️' : '⬇️';
               const changeValue = (currentPrice - lastPrice).toFixed(2);
-              const changePercentFormatted = changePercent.toFixed(1);
+              const changePercentFormatted = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(1);
               
               console.log(`   ${changeSymbol} [${batchProcessed}/${products.length}] ${product.code}: ${lastPrice} → ${currentPrice} (${changeValue} руб, ${changePercentFormatted}%)`);
             }
@@ -468,12 +443,12 @@ export async function updateAllPrices() {
     console.log(`📊 **ИТОГОВАЯ СТАТИСТИКА**`);
     console.log('-'.repeat(40));
     console.log(`✅ Всего обработано: ${totalProcessed} товаров`);
-    console.log(`🔄 Цены изменились в этом обновлении: ${totalChanged} товаров`);
+    console.log(`🔄 Изменений в этом обновлении: ${totalChanged} товаров`);
     console.log(`📝 Новых записей: ${totalNewRecords}`);
     console.log(`❌ Ошибок: ${totalErrors}`);
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
 
-    // ========== ОТПРАВКА СТАТИСТИКИ АДМИНУ (ИТОГИ ЗА СЕГОДНЯ) ==========
+    // ========== ОТПРАВКА КОМБИНИРОВАННОГО ОТЧЁТА АДМИНУ ==========
     try {
       // Получаем данные с API (как в команде /changes)
       const response = await fetch(`${process.env.API_URL || 'http://localhost:3000'}/api/bot/products`, {
@@ -483,33 +458,60 @@ export async function updateAllPrices() {
       if (response.ok) {
         const data = await response.json();
         const today = data.today;
-        const changes = data.products.filter(p => 
+        
+        // Собираем изменения за сегодня (из API)
+        const dailyChanges = data.products.filter(p => 
           p.priceToday && p.priceYesterday && 
           Math.abs(p.priceToday - p.priceYesterday) > 0.01
         );
 
-        let adminMessage = `📊 <b>ИТОГИ ЗА ${today}</b>\n\n`;
-        adminMessage += `⏱️ Обновление завершено в ${new Date().toLocaleTimeString('ru-RU')}\n`;
-        adminMessage += `📦 Всего изменений за день: ${changes.length}\n\n`;
+        // Группируем изменения за сегодня по категориям
+        const dailyStats = {};
+        dailyChanges.forEach(p => {
+          const cat = p.category || 'Без категории';
+          if (!dailyStats[cat]) {
+            dailyStats[cat] = { total: 0, increases: 0, decreases: 0 };
+          }
+          dailyStats[cat].total++;
+          if (p.priceToday > p.priceYesterday) {
+            dailyStats[cat].increases++;
+          } else {
+            dailyStats[cat].decreases++;
+          }
+        });
 
-        if (changes.length > 0) {
-          // Группируем по категориям
-          const categoryStatsDaily = {};
-          changes.forEach(p => {
-            const cat = p.category || 'Без категории';
-            if (!categoryStatsDaily[cat]) {
-              categoryStatsDaily[cat] = { total: 0, increases: 0, decreases: 0 };
-            }
-            categoryStatsDaily[cat].total++;
-            if (p.priceToday > p.priceYesterday) {
-              categoryStatsDaily[cat].increases++;
-            } else {
-              categoryStatsDaily[cat].decreases++;
-            }
-          });
+        // Формируем комбинированный отчёт
+        let adminMessage = `📊 <b>ОТЧЁТ ОБ ОБНОВЛЕНИИ ЦЕН</b>\n\n`;
+        adminMessage += `📅 ${new Date().toLocaleDateString('ru-RU')} ${new Date().toLocaleTimeString('ru-RU')}\n`;
+        adminMessage += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-          adminMessage += `📊 <b>По категориям:</b>\n`;
-          Object.entries(categoryStatsDaily)
+        // Часть 1: Изменения в текущем обновлении
+        adminMessage += `⚡ <b>В ЭТОМ ОБНОВЛЕНИИ</b>\n`;
+        if (totalChanged > 0) {
+          adminMessage += `📦 Всего изменений: ${totalChanged}\n`;
+          adminMessage += `📊 По категориям:\n`;
+          
+          Object.entries(currentUpdateStats)
+            .sort((a, b) => b[1].total - a[1].total)
+            .forEach(([cat, stats]) => {
+              adminMessage += `\n<b>${cat}</b>\n`;
+              adminMessage += `   🔄 Всего: ${stats.total}\n`;
+              adminMessage += `   ⬆️ Повышений: ${stats.increases}\n`;
+              adminMessage += `   ⬇️ Снижений: ${stats.decreases}\n`;
+            });
+        } else {
+          adminMessage += `📭 В этом обновлении изменений не было\n`;
+        }
+
+        adminMessage += `\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+        // Часть 2: Итоги за сегодня
+        adminMessage += `📅 <b>ИТОГИ ЗА ${today}</b>\n`;
+        if (dailyChanges.length > 0) {
+          adminMessage += `📦 Всего изменений за день: ${dailyChanges.length}\n`;
+          adminMessage += `📊 По категориям:\n`;
+          
+          Object.entries(dailyStats)
             .sort((a, b) => b[1].total - a[1].total)
             .forEach(([cat, stats]) => {
               adminMessage += `\n<b>${cat}</b>\n`;
@@ -522,7 +524,7 @@ export async function updateAllPrices() {
         }
 
         await sendTelegramMessage(adminMessage);
-        console.log('✅ Ежедневная сводка отправлена админу');
+        console.log('✅ Комбинированный отчёт отправлен админу');
       } else {
         console.error('❌ Не удалось получить данные для отчёта');
         await sendTelegramMessage(`❌ Не удалось получить данные для формирования отчёта`);
