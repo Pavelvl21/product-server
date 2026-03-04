@@ -64,6 +64,7 @@ function checkRateLimit(userId, command) {
     '/add': 2000,
     '/list': 2000,
     '/status': 2000,
+    '/search': 3000,
     'default': 1000
   };
   
@@ -89,7 +90,7 @@ function checkRateLimit(userId, command) {
 async function getUser(telegramId) {
   try {
     const result = await db.execute({
-      sql: 'SELECT status, chat_id, selected_categories FROM telegram_users WHERE telegram_id = ?',
+      sql: 'SELECT status, chat_id, selected_categories, username, first_name FROM telegram_users WHERE telegram_id = ?',
       args: [telegramId]
     });
     
@@ -153,6 +154,25 @@ async function updateUserCategories(telegramId, categories) {
   }
 }
 
+// ==================== ПОЛУЧЕНИЕ КАТЕГОРИЙ С СЕРВЕРА ====================
+async function getAllCategories() {
+  try {
+    const response = await fetch(`${API_URL}/api/public/categories`, {
+      timeout: 5000
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    return data.categories || [];
+  } catch (err) {
+    console.error('Ошибка получения категорий с сервера:', err);
+    return [];
+  }
+}
+
 // ==================== ПОЛУЧЕНИЕ ДАННЫХ С СЕРВЕРА ====================
 
 async function getProductsFromServer() {
@@ -213,14 +233,6 @@ async function getPriceChanges() {
 
 // ==================== ФУНКЦИИ ДЛЯ КАТЕГОРИЙ ====================
 
-async function getAllCategories() {
-  const data = await getProductsFromServer();
-  if (!data || !data.products) return [];
-  
-  const categories = [...new Set(data.products.map(p => p.category || 'Без категории'))];
-  return categories.sort();
-}
-
 async function getProductsByCategory(category) {
   const data = await getProductsFromServer();
   if (!data || !data.products) return [];
@@ -236,6 +248,65 @@ async function getProductsByCategory(category) {
       no_overpayment_max_months: p.no_overpayment_max_months,
       link: p.link
     }));
+}
+
+// ==================== ВЫБОР КАТЕГОРИЙ ПРИ СТАРТЕ ====================
+async function showCategorySelection(chatId, userId) {
+  try {
+    const categories = await getAllCategories();
+    
+    if (!categories || categories.length === 0) {
+      await sendMessage(chatId, '📭 В базе пока нет категорий. Обратитесь к администратору.');
+      return;
+    }
+
+    const user = await getUser(userId);
+    const selectedCategories = user?.selected_categories || [];
+
+    const buttons = [];
+    let row = [];
+    
+    categories.forEach((cat, index) => {
+      const isSelected = selectedCategories.includes(cat);
+      const prefix = isSelected ? '✅ ' : '';
+      
+      row.push({
+        text: `${prefix}${cat}`,
+        callback_data: `select_cat_${index}_${cat}`
+      });
+      
+      if (row.length === 2) {
+        buttons.push([...row]);
+        row = [];
+      }
+    });
+    
+    if (row.length > 0) {
+      buttons.push(row);
+    }
+
+    buttons.push([{
+      text: '✅ Готово',
+      callback_data: 'submit_categories'
+    }]);
+
+    const selectedText = selectedCategories.length > 0 
+      ? `\n\n<b>Выбрано:</b>\n${selectedCategories.map(c => `✅ ${c}`).join('\n')}` 
+      : '';
+
+    await sendMessage(chatId, 
+      `📁 <b>Выберите категории для отслеживания</b>\n` +
+      `Нажмите на категорию, чтобы выбрать/убрать её. После выбора нажмите "Готово".` +
+      selectedText, 
+      { 
+        reply_markup: { inline_keyboard: buttons },
+        parse_mode: 'HTML'
+      }
+    );
+  } catch (err) {
+    console.error('Ошибка в showCategorySelection:', err);
+    await sendMessage(chatId, '❌ Произошла ошибка. Попробуйте позже.');
+  }
 }
 
 // ==================== ФУНКЦИИ ПОКАЗА КАТЕГОРИЙ ====================
@@ -364,7 +435,7 @@ function formatProductSimple(product) {
 
 function formatProductFull(product) {
   const circleEmoji = product.isDecrease ? '🔴' : '🟢';
-  const changeValue = product.change; // теперь это число со знаком (+ или -)
+  const changeValue = product.change;
   
   return `
 ${circleEmoji} <b>${product.product_name}</b>
@@ -376,7 +447,6 @@ ${circleEmoji} <b>${product.product_name}</b>
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
 `;
 }
-// 📆 Платеж: ${product.monthly_payment || '—'} руб./мес - это минимальный доступный платеж, даже с переплатой
 
 // ==================== ФУНКЦИЯ ДЛЯ РАЗБИВКИ ДЛИННЫХ СООБЩЕНИЙ ====================
 
@@ -419,29 +489,150 @@ async function sendLongMessage(chatId, text, options = {}) {
   return true;
 }
 
-// ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+// ==================== ФУНКЦИЯ ПОИСКА ====================
+async function searchProducts(query) {
+  const data = await getProductsFromServer();
+  if (!data || !data.products) return [];
+  
+  const searchTerms = query.toLowerCase().split(' ');
+  
+  return data.products
+    .filter(p => {
+      const name = p.name.toLowerCase();
+      return searchTerms.every(term => name.includes(term));
+    })
+    .slice(0, 10)
+    .map(p => ({
+      code: p.code,
+      name: p.name,
+      price: p.priceToday || p.packPrice,
+      link: p.link
+    }));
+}
 
-async function notifyAdminAboutNewUser(userId, username, firstName, chatId) {
+// ==================== УВЕДОМЛЕНИЕ АДМИНА ====================
+async function notifyAdminAboutNewUser(userId, username, firstName, chatId, selectedCategories) {
+  const categoriesList = selectedCategories.map(c => `• ${c}`).join('\n');
+  
   const info = [
     `🆔 ID: <code>${userId}</code>`,
     `👤 Имя: ${firstName || 'не указано'}`,
     `📱 Username: ${username ? '@' + username : 'не указан'}`,
     `💬 Chat ID: <code>${chatId}</code>`,
+    `📁 <b>Запрошенные категории (${selectedCategories.length}):</b>\n${categoriesList}`,
     `🕐 ${new Date().toLocaleString('ru-RU')}`
   ].join('\n');
 
+  // Кнопки для удаления каждой категории
+  const categoryButtons = selectedCategories.map(cat => ([{
+    text: `❌ Убрать ${cat}`,
+    callback_data: `admin_remove_${userId}_${cat}`
+  }]));
+
+  // Кнопки для добавления всех доступных категорий
+  const allCategories = await getAllCategories();
+  const addButtons = [];
+  let row = [];
+  
+  allCategories.forEach((cat, index) => {
+    if (!selectedCategories.includes(cat)) {
+      row.push({
+        text: `➕ ${cat}`,
+        callback_data: `admin_add_${userId}_${cat}`
+      });
+      
+      if (row.length === 2) {
+        addButtons.push([...row]);
+        row = [];
+      }
+    }
+  });
+  
+  if (row.length > 0) {
+    addButtons.push(row);
+  }
+
   const keyboard = {
-    inline_keyboard: [[
-      { text: '✅ Разрешить', callback_data: `approve_${userId}` },
-      { text: '❌ Отклонить', callback_data: `reject_${userId}` },
-      { text: '🚫 Заблокировать', callback_data: `block_${userId}` }
-    ]]
+    inline_keyboard: [
+      ...categoryButtons,
+      ...addButtons,
+      [{ text: '✅ Подтвердить', callback_data: `admin_approve_${userId}` }],
+      [{ text: '❌ Отклонить', callback_data: `admin_reject_${userId}` }],
+      [{ text: '🚫 Заблокировать', callback_data: `admin_block_${userId}` }]
+    ]
   };
 
   await sendMessage(ADMIN_CHAT_ID, `🔔 <b>Новый запрос на доступ!</b>\n\n${info}`, {
     reply_markup: keyboard
   });
 }
+
+// ==================== ОБНОВЛЕНИЕ СООБЩЕНИЯ АДМИНА ====================
+async function updateAdminRequestMessage(message, userId) {
+  const user = await getUser(userId);
+  const selected = user?.selected_categories || [];
+  
+  const categoriesList = selected.map(c => `• ${c}`).join('\n');
+  
+  const info = [
+    `🆔 ID: <code>${userId}</code>`,
+    `👤 Имя: ${user.first_name || 'не указано'}`,
+    `📱 Username: ${user.username ? '@' + user.username : 'не указан'}`,
+    `📁 <b>Выбранные категории (${selected.length}):</b>\n${categoriesList}`,
+    `🕐 ${new Date().toLocaleString('ru-RU')}`
+  ].join('\n');
+
+  const categoryButtons = selected.map(cat => ([{
+    text: `❌ Убрать ${cat}`,
+    callback_data: `admin_remove_${userId}_${cat}`
+  }]));
+
+  const allCategories = await getAllCategories();
+  const addButtons = [];
+  let row = [];
+  
+  allCategories.forEach((cat, index) => {
+    if (!selected.includes(cat)) {
+      row.push({
+        text: `➕ ${cat}`,
+        callback_data: `admin_add_${userId}_${cat}`
+      });
+      
+      if (row.length === 2) {
+        addButtons.push([...row]);
+        row = [];
+      }
+    }
+  });
+  
+  if (row.length > 0) {
+    addButtons.push(row);
+  }
+
+  const keyboard = {
+    inline_keyboard: [
+      ...categoryButtons,
+      ...addButtons,
+      [{ text: '✅ Подтвердить', callback_data: `admin_approve_${userId}` }],
+      [{ text: '❌ Отклонить', callback_data: `admin_reject_${userId}` }],
+      [{ text: '🚫 Заблокировать', callback_data: `admin_block_${userId}` }]
+    ]
+  };
+
+  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: message.chat.id,
+      message_id: message.message_id,
+      text: `🔔 <b>Запрос на доступ (обновлено)</b>\n\n${info}`,
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  });
+}
+
+// ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
 async function handleMessage(message) {
   try {
@@ -459,12 +650,7 @@ async function handleMessage(message) {
     if (text === '/start') {
       if (!user) {
         await saveUser(userId, username, firstName, lastName, chatId);
-        await sendMessage(chatId, 
-          '👋 Привет! Я бот для отслеживания цен.\n\n' +
-          '📝 <b>Запрос на доступ отправлен администратору.</b>\n' +
-          'Ожидайте подтверждения.'
-        );
-        await notifyAdminAboutNewUser(userId, username, firstName, chatId);
+        await showCategorySelection(chatId, userId);
       } else if (user.status === 'approved') {
         await sendMessage(chatId, 
           '👋 С возвращением!\n\n' +
@@ -473,10 +659,16 @@ async function handleMessage(message) {
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
           '/changes - изменения цен за сегодня\n' +
+          '/search - поиск товаров\n' +
           '/help - список всех команд'
         );
       } else if (user.status === 'pending') {
-        await sendMessage(chatId, '⏳ Запрос ещё рассматривается');
+        const categories = user.selected_categories || [];
+        if (categories.length === 0) {
+          await showCategorySelection(chatId, userId);
+        } else {
+          await sendMessage(chatId, '⏳ Запрос уже отправлен администратору. Ожидайте.');
+        }
       } else {
         await sendMessage(chatId, '⛔ Доступ запрещён');
       }
@@ -502,7 +694,8 @@ async function handleMessage(message) {
         '/add - добавить категории для отслеживания\n' +
         '/list - показать выбранные категории\n' +
         '/goods - показать список товаров (только названия)\n' +
-        '/changes - показать изменения цен за сегодня'
+        '/changes - показать изменения цен за сегодня\n' +
+        '/search <текст> - поиск товаров'
       );
     } else if (text === '/status') {
       if (!checkRateLimit(userId, '/status')) {
@@ -563,21 +756,60 @@ async function handleMessage(message) {
         return;
       }
       
+      const userCategories = user?.selected_categories || [];
+      
+      if (userCategories.length === 0) {
+        await sendMessage(chatId, '❌ Сначала выберите категории через /add');
+        return;
+      }
+      
       const changes = await getPriceChanges();
       
-      if (changes.length === 0) {
-        await sendMessage(chatId, '📭 За сегодня изменений цен не было');
+      // Фильтруем изменения только по категориям пользователя
+      const filteredChanges = changes.filter(change => 
+        userCategories.includes(change.category)
+      );
+      
+      if (filteredChanges.length === 0) {
+        await sendMessage(chatId, '📭 В ваших категориях за сегодня изменений цен не было');
         return;
       }
 
       await sendMessage(chatId, 
-        `📊 <b>Изменения цен за сегодня (${changes.length}):</b>`
+        `📊 <b>Изменения цен в ваших категориях за сегодня (${filteredChanges.length}):</b>`
       );
 
-      for (const change of changes) {
+      for (const change of filteredChanges) {
         await sendMessage(chatId, formatProductFull(change));
         await new Promise(resolve => setTimeout(resolve, 100));
       }
+    } else if (text.startsWith('/search ')) {
+      if (!checkRateLimit(userId, '/search')) {
+        return;
+      }
+      
+      const query = text.replace('/search ', '').trim();
+      if (query.length < 3) {
+        await sendMessage(chatId, '⚠️ Введите минимум 3 символа для поиска');
+        return;
+      }
+      
+      const results = await searchProducts(query);
+      
+      if (results.length === 0) {
+        await sendMessage(chatId, `🔍 По запросу "${query}" ничего не найдено`);
+        return;
+      }
+      
+      let message = `🔍 <b>Результаты поиска "${query}":</b>\n\n`;
+      results.forEach((p, i) => {
+        message += `${i + 1}. <b>${p.name}</b>\n`;
+        message += `   Код: <code>${p.code}</code>\n`;
+        message += `   Цена: ${p.price} руб.\n`;
+        message += `   🔗 <a href="https://www.21vek.by${p.link}">Ссылка</a>\n\n`;
+      });
+      
+      await sendMessage(chatId, message);
     } else {
       await sendMessage(chatId, '❓ Неизвестная команда. /help');
     }
@@ -600,8 +832,11 @@ async function handleCallback(query) {
     const user = await getUser(fromId);
     
     if (!user || user.status !== 'approved') {
-      await answerCallback(query.id, '⛔ Сначала авторизуйтесь через /start');
-      return;
+      // Для выбора категорий при старте разрешаем даже без подтверждения
+      if (!data.startsWith('select_cat_') && data !== 'submit_categories' && !data.startsWith('admin_')) {
+        await answerCallback(query.id, '⛔ Сначала авторизуйтесь через /start');
+        return;
+      }
     }
 
     if (data === 'noop') {
@@ -609,6 +844,67 @@ async function handleCallback(query) {
       return;
     }
 
+    // ==================== ВЫБОР КАТЕГОРИЙ ПРИ СТАРТЕ ====================
+    if (data.startsWith('select_cat_')) {
+      const parts = data.split('_');
+      const index = parseInt(parts[2]);
+      const category = parts.slice(3).join('_');
+      
+      // Получаем текущие выбранные категории пользователя
+      const user = await getUser(fromId);
+      let selected = user?.selected_categories || [];
+      
+      if (!selected.includes(category)) {
+        selected.push(category);
+        await updateUserCategories(fromId, selected);
+        await answerCallback(query.id, `✅ ${category} выбрана`);
+      } else {
+        // Если уже выбрана - убираем
+        selected = selected.filter(c => c !== category);
+        await updateUserCategories(fromId, selected);
+        await answerCallback(query.id, `❌ ${category} убрана`);
+      }
+      
+      // Показываем обновленный список
+      await showCategorySelection(message.chat.id, fromId);
+      return;
+    }
+
+    if (data === 'submit_categories') {
+      const user = await getUser(fromId);
+      const selected = user?.selected_categories || [];
+      
+      if (selected.length === 0) {
+        await answerCallback(query.id, '⚠️ Выберите хотя бы одну категорию');
+        return;
+      }
+      
+      // Убираем клавиатуру
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          reply_markup: { inline_keyboard: [] }
+        })
+      });
+      
+      // Отправляем уведомление админу с выбранными категориями
+      await notifyAdminAboutNewUser(fromId, user.username, user.first_name, message.chat.id, selected);
+      
+      await sendMessage(message.chat.id, 
+        '✅ <b>Запрос отправлен администратору!</b>\n\n' +
+        `Выбранные категории (${selected.length}):\n` +
+        selected.map(c => `• ${c}`).join('\n') +
+        '\n\n⏳ Ожидайте подтверждения.'
+      );
+      
+      await answerCallback(query.id, '✅ Запрос отправлен');
+      return;
+    }
+
+    // ==================== ОБРАБОТКА ДОБАВЛЕНИЯ КАТЕГОРИЙ (ДЛЯ ОДОБРЕННЫХ) ====================
     if (data.startsWith('add_')) {
       const parts = data.split('_');
       const index = parseInt(parts[1]);
@@ -674,13 +970,55 @@ async function handleCallback(query) {
       return;
     }
 
+    // ==================== АДМИНСКИЕ ДЕЙСТВИЯ ====================
     if (fromId != ADMIN_CHAT_ID) {
       await answerCallback(query.id, '⛔ Нет прав');
       return;
     }
 
-    if (data.startsWith('approve_')) {
-      const userId = data.replace('approve_', '');
+    // Добавление категории админом
+    if (data.startsWith('admin_add_')) {
+      const parts = data.split('_');
+      const userId = parts[2];
+      const category = parts.slice(3).join('_');
+      
+      // Получаем текущие категории пользователя
+      const user = await getUser(userId);
+      let selected = user?.selected_categories || [];
+      
+      if (!selected.includes(category)) {
+        selected.push(category);
+        await updateUserCategories(userId, selected);
+      }
+      
+      // Обновляем сообщение админа
+      await updateAdminRequestMessage(message, userId);
+      await answerCallback(query.id, `✅ ${category} добавлена`);
+      return;
+    }
+
+    // Удаление категории админом
+    if (data.startsWith('admin_remove_')) {
+      const parts = data.split('_');
+      const userId = parts[2];
+      const category = parts.slice(3).join('_');
+      
+      // Получаем текущие категории пользователя
+      const user = await getUser(userId);
+      let selected = user?.selected_categories || [];
+      
+      selected = selected.filter(c => c !== category);
+      await updateUserCategories(userId, selected);
+      
+      // Обновляем сообщение админа
+      await updateAdminRequestMessage(message, userId);
+      await answerCallback(query.id, `❌ ${category} удалена`);
+      return;
+    }
+
+    // Подтверждение
+    if (data.startsWith('admin_approve_')) {
+      const userId = data.replace('admin_approve_', '');
       const user = await getUser(userId);
       
       if (user) {
@@ -696,14 +1034,20 @@ async function handleCallback(query) {
           })
         });
 
+        const categories = user.selected_categories || [];
+        const categoriesText = categories.length > 0 
+          ? `\n\n📁 <b>Доступные категории:</b>\n${categories.map(c => `• ${c}`).join('\n')}` 
+          : '';
+
         await sendMessage(ADMIN_CHAT_ID, `✅ Пользователь ${userId} подтверждён`);
         await sendMessage(user.chat_id, 
-          '✅ <b>Доступ подтверждён!</b>\n\n' +
+          '✅ <b>Доступ подтверждён!</b>' + categoriesText + '\n\n' +
           '📋 <b>Команды:</b>\n' +
           '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
           '/changes - изменения цен за сегодня\n' +
+          '/search - поиск товаров\n' +
           '/help - список всех команд'
         );
         await answerCallback(query.id, '✅ Подтверждено');
@@ -711,8 +1055,9 @@ async function handleCallback(query) {
       return;
     }
 
-    if (data.startsWith('reject_')) {
-      const userId = data.replace('reject_', '');
+    // Отклонение
+    if (data.startsWith('admin_reject_')) {
+      const userId = data.replace('admin_reject_', '');
       const user = await getUser(userId);
       
       if (user) {
@@ -735,8 +1080,9 @@ async function handleCallback(query) {
       return;
     }
 
-    if (data.startsWith('block_')) {
-      const userId = data.replace('block_', '');
+    // Блокировка
+    if (data.startsWith('admin_block_')) {
+      const userId = data.replace('admin_block_', '');
       const user = await getUser(userId);
       
       if (user) {
