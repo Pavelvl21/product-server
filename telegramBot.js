@@ -381,30 +381,32 @@ async function handleMessage(message) {
     return;
   }
 
-  if (text === '/changes') {
-    if (!checkRateLimit(userId, '/changes')) return;
-    
-    const categories = user.selected_categories || [];
-    if (!categories.length) {
-      await sendMessage(chatId, '❌ Категории не выбраны');
-      return;
-    }
-
-    const allChanges = await getPriceChanges();
-    const changes = allChanges.filter(c => categories.includes(c.category));
-
-    if (!changes.length) {
-      await sendMessage(chatId, '📭 Сегодня нет изменений');
-      return;
-    }
-
-    await sendMessage(chatId, `📊 Изменений: ${changes.length}`);
-    for (const ch of changes.slice(0, 5)) {
-      await sendMessage(chatId, formatProductFull(ch));
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+if (text === '/changes') {
+  if (!checkRateLimit(userId, '/changes')) return;
+  
+  const categories = user.selected_categories || [];
+  if (!categories.length) {
+    await sendMessage(chatId, '❌ Категории не выбраны');
     return;
   }
+
+  const allChanges = await getPriceChanges();
+  const changes = allChanges.filter(c => categories.includes(c.category));
+
+  if (!changes.length) {
+    await sendMessage(chatId, '📭 Сегодня нет изменений в выбранных категориях');
+    return;
+  }
+
+  await sendMessage(chatId, `📊 Найдено изменений: ${changes.length}`);
+
+  // Отправляем ВСЕ изменения
+  for (const ch of changes) {
+    await sendMessage(chatId, formatProductFull(ch));
+    await new Promise(resolve => setTimeout(resolve, 100)); // небольшая задержка
+  }
+  return;
+}
 
   await sendMessage(chatId, '❓ Неизвестная команда. /status');
 }
