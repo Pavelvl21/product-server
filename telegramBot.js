@@ -6,8 +6,7 @@ const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const SECRET_KEY = process.env.SECRET_KEY;
 const API_URL = process.env.API_URL || 'http://localhost:3000';
 
-// Хранилище для временных данных (email и выбранные категории)
-const tempUserData = new Map();
+// Хранилище для rate limiting
 const userLastCommand = new Map();
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
@@ -196,7 +195,7 @@ async function showCategorySelection(chatId, userId, selected = []) {
   if (row.length) keyboard.push(row);
 
   keyboard.push([{
-    text: '✅ Готово',
+    text: '✅ Отправить запрос',
     callback_data: `finish_selection_${userId}`
   }]);
 
@@ -336,12 +335,15 @@ async function sendLongMessage(chatId, text, options = {}) {
 
 // ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
-async function notifyAdminAboutNewUser(userId, username, firstName, chatId) {
+async function notifyAdminAboutNewUser(userId, username, firstName, chatId, selectedCategories) {
+  const categoriesList = selectedCategories.map(c => `• ${c}`).join('\n');
+  
   const info = [
     `🆔 ID: <code>${userId}</code>`,
     `👤 Имя: ${firstName || 'не указано'}`,
     `📱 Username: ${username ? '@' + username : 'не указан'}`,
     `💬 Chat ID: <code>${chatId}</code>`,
+    `📁 <b>Запрошенные категории:</b>\n${categoriesList}`,
     `🕐 ${new Date().toLocaleString('ru-RU')}`
   ].join('\n');
 
@@ -371,45 +373,51 @@ async function handleMessage(message) {
 
     const user = await getUser(userId);
 
+    // === /start ===
     if (text === '/start') {
       if (!user) {
+        // Новый пользователь — создаём и сразу показываем категории
         await saveUser(userId, username, firstName, lastName, chatId);
-        await sendMessage(chatId, 
-          '👋 Привет! Я бот для отслеживания цен.\n\n' +
-          '📝 <b>Запрос на доступ отправлен администратору.</b>\n' +
-          'Ожидайте подтверждения.'
-        );
-        await notifyAdminAboutNewUser(userId, username, firstName, chatId);
-      } else if (user.status === 'approved') {
+        await showCategorySelection(chatId, userId, []);
+        return;
+      }
+      
+      if (user.status === 'approved') {
         await sendMessage(chatId, 
           '👋 С возвращением!\n\n' +
           '📋 <b>Команды:</b>\n' +
-          '/add - добавить категории для отслеживания\n' +
+          '/add - изменить категории\n' +
           '/list - показать выбранные категории\n' +
-          '/goods - показать список товаров\n' +
-          '/changes - изменения цен за сегодня\n' +
-          '/help - список всех команд'
+          '/goods - список товаров\n' +
+          '/changes - изменения цен\n' +
+          '/help - помощь'
         );
-      } else if (user.status === 'pending') {
-        // Показываем выбор категорий для пользователя, который ещё не завершил регистрацию
-        await showCategorySelection(chatId, userId, user.selected_categories || []);
-      } else {
-        await sendMessage(chatId, '⛔ Доступ запрещён');
+        return;
       }
+      
+      if (user.status === 'pending') {
+        // Показываем текущий выбор категорий
+        await showCategorySelection(chatId, userId, user.selected_categories || []);
+        return;
+      }
+      
+      await sendMessage(chatId, '⛔ Доступ запрещён');
       return;
     }
 
+    // Для всех остальных команд проверяем наличие пользователя
     if (!user) {
       await sendMessage(chatId, '❌ Сначала используйте /start');
       return;
     }
 
+    // Если пользователь в статусе pending — перенаправляем на выбор категорий
     if (user.status === 'pending') {
-      // Если пользователь в статусе pending, показываем выбор категорий
       await showCategorySelection(chatId, userId, user.selected_categories || []);
       return;
     }
 
+    // Дальше только для approved
     if (user.status !== 'approved') {
       await sendMessage(chatId, '⏳ Ваш запрос ещё рассматривается');
       return;
@@ -422,12 +430,15 @@ async function handleMessage(message) {
         '/start - приветствие\n' +
         '/help - это сообщение\n' +
         '/status - проверить статус\n' +
-        '/add - добавить категории для отслеживания\n' +
+        '/add - изменить категории\n' +
         '/list - показать выбранные категории\n' +
-        '/goods - показать список товаров\n' +
-        '/changes - показать изменения цен за сегодня'
+        '/goods - список товаров\n' +
+        '/changes - изменения цен'
       );
-    } else if (text === '/status') {
+      return;
+    }
+
+    if (text === '/status') {
       if (!checkRateLimit(userId, '/status')) return;
       
       const categories = user.selected_categories || [];
@@ -439,10 +450,16 @@ async function handleMessage(message) {
         `✅ <b>Статус:</b> подтверждён\n` +
         `🆔 ID: <code>${userId}</code>${categoriesInfo}`
       );
-    } else if (text === '/add') {
+      return;
+    }
+
+    if (text === '/add') {
       if (!checkRateLimit(userId, '/add')) return;
       await showCategorySelection(chatId, userId, user.selected_categories || []);
-    } else if (text === '/list') {
+      return;
+    }
+
+    if (text === '/list') {
       if (!checkRateLimit(userId, '/list')) return;
       
       const selected = user.selected_categories || [];
@@ -453,7 +470,10 @@ async function handleMessage(message) {
       
       const list = selected.map(c => `• ${c}`).join('\n');
       await sendMessage(chatId, `📋 Ваши категории:\n${list}`);
-    } else if (text === '/goods') {
+      return;
+    }
+
+    if (text === '/goods') {
       if (!checkRateLimit(userId, '/goods')) return;
       
       const selectedCategories = user?.selected_categories || [];
@@ -481,7 +501,10 @@ async function handleMessage(message) {
       await sendLongMessage(chatId, 
         `📦 <b>Товары в выбранных категориях (${allProducts.length}):</b>\n\n${productList}`
       );
-    } else if (text === '/changes') {
+      return;
+    }
+
+    if (text === '/changes') {
       if (!checkRateLimit(userId, '/changes')) return;
       
       const userCategories = user.selected_categories || [];
@@ -506,9 +529,11 @@ async function handleMessage(message) {
         await sendMessage(chatId, formatProductFull(change));
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-    } else {
-      await sendMessage(chatId, '❓ Неизвестная команда. /help');
+      return;
     }
+
+    await sendMessage(chatId, '❓ Неизвестная команда. /help');
+    
   } catch (err) {
     console.error('❌ Ошибка в handleMessage:', err);
     await sendMessage(message?.chat?.id, '❌ Произошла внутренняя ошибка. Попробуйте позже.');
@@ -565,7 +590,7 @@ async function handleCallback(query) {
       return;
     }
 
-    // === ЗАВЕРШЕНИЕ ВЫБОРА — доступно даже без авторизации ===
+    // === ЗАВЕРШЕНИЕ ВЫБОРА — отправка запроса админу ===
     if (data.startsWith('finish_selection_')) {
       const userId = parseInt(data.replace('finish_selection_', ''));
 
@@ -586,14 +611,14 @@ async function handleCallback(query) {
         return;
       }
 
-      // Подтверждаем регистрацию
-      await fetch(`${API_URL}/api/public/user/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          telegramId: fromId
-        })
-      });
+      // Отправляем уведомление админу
+      await notifyAdminAboutNewUser(
+        fromId, 
+        currentUser.username, 
+        currentUser.first_name, 
+        message.chat.id,
+        selected
+      );
 
       // Убираем клавиатуру
       await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
@@ -607,43 +632,76 @@ async function handleCallback(query) {
       });
 
       await sendMessage(message.chat.id, 
-        `✅ <b>Регистрация завершена!</b>\n\n` +
-        `Выбрано категорий: ${selected.length}\n` +
+        '✅ <b>Запрос отправлен!</b>\n\n' +
         selected.map(c => `• ${c}`).join('\n') + `\n\n` +
-        `Теперь вам доступны команды:\n` +
-        `/goods - список товаров\n` +
-        `/changes - изменения цен\n` +
-        `/list - показать категории`
+        'Ожидайте подтверждения администратора.'
       );
 
-      await answerCallback(query.id, '✅ Регистрация завершена');
+      await answerCallback(query.id, '✅ Запрос отправлен');
       return;
     }
 
-    // === АДМИНСКИЕ КНОПКИ — админу можно всё ===
-    if (fromId == ADMIN_CHAT_ID) {
-      // Админ подтверждает пользователя (в том числе себя)
-      if (data.startsWith('approve_')) {
-        const userId = data.replace('approve_', '');
+    // === АДМИНСКИЕ КНОПКИ — только для админа ===
+    if (fromId != ADMIN_CHAT_ID) {
+      await answerCallback(query.id, '⛔ Нет прав');
+      return;
+    }
+
+    // Админ подтверждает пользователя
+    if (data.startsWith('approve_')) {
+      const userId = data.replace('approve_', '');
+      
+      const targetUser = await getUser(userId);
+      
+      if (!targetUser) {
+        await answerCallback(query.id, '❌ Пользователь не найден');
+        return;
+      }
+      
+      // Проверяем, выбраны ли категории
+      if (!targetUser.selected_categories || targetUser.selected_categories.length === 0) {
+        await answerCallback(query.id, '⚠️ Пользователь не выбрал категории');
+        return;
+      }
+      
+      // Подтверждаем
+      await updateUserStatus(userId, 'approved', 'admin');
+      
+      // Убираем клавиатуру
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          reply_markup: { inline_keyboard: [] }
+        })
+      });
+
+      await sendMessage(ADMIN_CHAT_ID, `✅ Пользователь ${userId} подтверждён`);
+      
+      if (targetUser.chat_id) {
+        await sendMessage(targetUser.chat_id, 
+          '✅ <b>Регистрация завершена!</b>\n\n' +
+          '📋 <b>Команды:</b>\n' +
+          '/add - изменить категории\n' +
+          '/list - показать категории\n' +
+          '/goods - список товаров\n' +
+          '/changes - изменения цен'
+        );
+      }
+      
+      await answerCallback(query.id, '✅ Подтверждено');
+      return;
+    }
+
+    if (data.startsWith('reject_')) {
+      const userId = data.replace('reject_', '');
+      const targetUser = await getUser(userId);
+      
+      if (targetUser) {
+        await updateUserStatus(userId, 'rejected', 'admin');
         
-        // Получаем пользователя (может быть null)
-        let targetUser = await getUser(userId);
-        
-        // Если пользователя нет в БД — создаём его как approved
-        if (!targetUser) {
-          // Создаём пользователя с минимальными данными
-          await db.execute({
-            sql: `INSERT INTO telegram_users (telegram_id, status, selected_categories) 
-                  VALUES (?, 'approved', '[]')`,
-            args: [userId]
-          });
-          targetUser = await getUser(userId);
-        } else {
-          // Если есть — обновляем статус
-          await updateUserStatus(userId, 'approved', 'admin');
-        }
-        
-        // Убираем клавиатуру
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -654,81 +712,38 @@ async function handleCallback(query) {
           })
         });
 
-        await sendMessage(ADMIN_CHAT_ID, `✅ Пользователь ${userId} подтверждён`);
-        
-        // Отправляем уведомление пользователю, если есть chat_id
-        if (targetUser?.chat_id) {
-          await sendMessage(targetUser.chat_id, 
-            '✅ <b>Доступ подтверждён!</b>\n\n' +
-            '📋 <b>Команды:</b>\n' +
-            '/add - добавить категории для отслеживания\n' +
-            '/list - показать выбранные категории\n' +
-            '/goods - показать список товаров\n' +
-            '/changes - изменения цен за сегодня\n' +
-            '/help - список всех команд'
-          );
+        await sendMessage(ADMIN_CHAT_ID, `❌ Пользователь ${userId} отклонён`);
+        if (targetUser.chat_id) {
+          await sendMessage(targetUser.chat_id, '⛔ <b>Доступ отклонён</b>');
         }
-        
-        await answerCallback(query.id, '✅ Подтверждено');
-        return;
+        await answerCallback(query.id, '❌ Отклонено');
       }
-
-      if (data.startsWith('reject_')) {
-        const userId = data.replace('reject_', '');
-        const targetUser = await getUser(userId);
-        
-        if (targetUser) {
-          await updateUserStatus(userId, 'rejected', 'admin');
-          
-          await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: message.chat.id,
-              message_id: message.message_id,
-              reply_markup: { inline_keyboard: [] }
-            })
-          });
-
-          await sendMessage(ADMIN_CHAT_ID, `❌ Пользователь ${userId} отклонён`);
-          if (targetUser.chat_id) {
-            await sendMessage(targetUser.chat_id, '⛔ <b>Доступ отклонён</b>');
-          }
-          await answerCallback(query.id, '❌ Отклонено');
-        }
-        return;
-      }
-
-      if (data.startsWith('block_')) {
-        const userId = data.replace('block_', '');
-        const targetUser = await getUser(userId);
-        
-        if (targetUser) {
-          await updateUserStatus(userId, 'blocked', 'admin');
-          
-          await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: message.chat.id,
-              message_id: message.message_id,
-              reply_markup: { inline_keyboard: [] }
-            })
-          });
-
-          await sendMessage(ADMIN_CHAT_ID, `🚫 Пользователь ${userId} заблокирован`);
-          if (targetUser.chat_id) {
-            await sendMessage(targetUser.chat_id, '🚫 <b>Вы заблокированы</b>');
-          }
-          await answerCallback(query.id, '🚫 Заблокировано');
-        }
-        return;
-      }
+      return;
     }
 
-    // === ДЛЯ НЕ-АДМИНОВ — проверяем авторизацию ===
-    if (!user || user.status !== 'approved') {
-      await answerCallback(query.id, '⛔ Сначала авторизуйтесь через /start');
+    if (data.startsWith('block_')) {
+      const userId = data.replace('block_', '');
+      const targetUser = await getUser(userId);
+      
+      if (targetUser) {
+        await updateUserStatus(userId, 'blocked', 'admin');
+        
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            reply_markup: { inline_keyboard: [] }
+          })
+        });
+
+        await sendMessage(ADMIN_CHAT_ID, `🚫 Пользователь ${userId} заблокирован`);
+        if (targetUser.chat_id) {
+          await sendMessage(targetUser.chat_id, '🚫 <b>Вы заблокированы</b>');
+        }
+        await answerCallback(query.id, '🚫 Заблокировано');
+      }
       return;
     }
 
