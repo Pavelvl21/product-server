@@ -387,6 +387,8 @@ async function handleMessage(message) {
 
 // ==================== ОБРАБОТЧИК CALLBACK ====================
 
+// ==================== ОБРАБОТЧИК CALLBACK ====================
+
 async function handleCallback(query) {
   const data = query.data;
   const msg = query.message;
@@ -453,7 +455,13 @@ async function handleCallback(query) {
       ? `\n\n✅ Выбрано:\n${updated.map(c => `• ${c}`).join('\n')}` 
       : '';
 
-    // Редактируем текущее сообщение
+    // Сначала отвечаем на callback
+    await answerCallback(query.id, `✅ ${category} ${selected.includes(category) ? 'убрана' : 'добавлена'}`);
+
+    // Даём Telegram время обработать ответ (100мс достаточно)
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Теперь обновляем сообщение
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -466,7 +474,6 @@ async function handleCallback(query) {
       })
     });
 
-    await answerCallback(query.id, `✅ ${category} ${selected.includes(category) ? 'убрана' : 'добавлена'}`);
     return;
   }
 
@@ -603,8 +610,7 @@ async function handleCallback(query) {
         body: JSON.stringify({
           chat_id: msg.chat.id,
           message_id: msg.message_id,
-          reply_markup: { inline_keyboard: []
-          }
+          reply_markup: { inline_keyboard: [] }
         })
       });
 
