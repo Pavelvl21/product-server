@@ -136,6 +136,27 @@ ${circleEmoji} <b>${product.product_name}</b>
 `;
 }
 
+// ДОБАВЛЯЕМ ЭТУ ФУНКЦИЮ (она используется в priceUpdater.js)
+export function formatPriceChangeNotification(product, oldPrice, newPrice) {
+  const change = newPrice - oldPrice;
+  const percent = ((change / oldPrice) * 100).toFixed(1);
+  const isDecrease = change < 0;
+  
+  return formatProductFull({
+    product_code: product.code,
+    product_name: product.name,
+    current_price: newPrice,
+    previous_price: oldPrice,
+    change: change,
+    percent: percent,
+    packPrice: product.packPrice,
+    monthly_payment: product.monthly_payment,
+    no_overpayment_max_months: product.no_overpayment_max_months,
+    link: product.link,
+    isDecrease: isDecrease
+  });
+}
+
 // ==================== РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ ====================
 
 async function sendLongMessage(chatId, text, options = {}) {
@@ -224,14 +245,6 @@ async function handleMessage(message) {
           'После выбора нажмите "Готово".', 
           { reply_markup: { inline_keyboard: keyboard } }
         );
-
-        // Сохраняем временные данные в памяти? Нет, будем хранить в состоянии самого сообщения через callback.
-        // Для этого будем использовать глобальный Map, но лучше хранить в БД на сервере.
-        // Однако у нас нет сессии. Предлагаем хранить временный выбор в Map на стороне бота, 
-        // но это не надёжно при рестарте. Альтернатива: сразу отправлять выбранные категории на сервер после каждого нажатия.
-        // Поступим так: при каждом выборе категории отправляем запрос на сервер для обновления временной заявки? 
-        // Но у нас ещё нет заявки. Лучше создать заявку сразу после /start, а потом обновлять её через callback'и.
-        // Создадим заявку со статусом "draft" или "pending" прямо сейчас.
 
         try {
           const requestData = {
