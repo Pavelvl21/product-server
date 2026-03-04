@@ -61,10 +61,8 @@ function checkRateLimit(userId, command) {
   const limits = {
     '/changes': 10000,
     '/goods': 5000,
-    '/add': 2000,
     '/list': 2000,
     '/status': 2000,
-    '/search': 3000,
     'default': 1000
   };
   
@@ -309,69 +307,7 @@ async function showCategorySelection(chatId, userId) {
   }
 }
 
-// ==================== ФУНКЦИИ ПОКАЗА КАТЕГОРИЙ ====================
-
-async function showAddCategories(chatId, user) {
-  try {
-    const categories = await getAllCategories();
-    
-    if (!categories || categories.length === 0) {
-      await sendMessage(chatId, '📭 В базе пока нет категорий');
-      return;
-    }
-
-    const selectedCategories = user?.selected_categories || [];
-
-    const buttons = [];
-    const row = [];
-    
-    categories.forEach((cat, index) => {
-      if (selectedCategories.includes(cat)) return;
-      
-      row.push({
-        text: cat,
-        callback_data: `add_${index}_${cat}`
-      });
-      
-      if (row.length === 2) {
-        buttons.push([...row]);
-        row.length = 0;
-      }
-    });
-    
-    if (row.length > 0) {
-      buttons.push(row);
-    }
-
-    if (buttons.length === 0) {
-      buttons.push([{
-        text: '✅ Все категории уже выбраны',
-        callback_data: 'noop'
-      }]);
-    }
-
-    buttons.push([{
-      text: '✅ Готово',
-      callback_data: 'done_adding'
-    }]);
-
-    const selectedText = selectedCategories.length > 0 
-      ? `\n\n<b>Выбранные категории:</b>\n${selectedCategories.map(c => `✅ ${c}`).join('\n')}` 
-      : '\n\n⚠️ Пока не выбрано ни одной категории';
-
-    await sendMessage(chatId, 
-      `📁 <b>Добавление категорий</b>\n` +
-      `Нажмите на категорию, чтобы добавить её в список отслеживания.${selectedText}`, 
-      { 
-        reply_markup: { inline_keyboard: buttons },
-        parse_mode: 'HTML'
-      }
-    );
-  } catch (err) {
-    console.error('Ошибка в showAddCategories:', err);
-    await sendMessage(chatId, '❌ Произошла ошибка. Попробуйте позже.');
-  }
-}
+// ==================== ФУНКЦИИ ПОКАЗА КАТЕГОРИЙ (ТОЛЬКО LIST) ====================
 
 async function showActiveCategories(chatId, user) {
   try {
@@ -380,7 +316,7 @@ async function showActiveCategories(chatId, user) {
     if (selectedCategories.length === 0) {
       await sendMessage(chatId, 
         '📭 У вас нет выбранных категорий.\n' +
-        'Используйте /add чтобы добавить категории.'
+        'Обратитесь к администратору для изменения списка.'
       );
       return;
     }
@@ -396,12 +332,13 @@ async function showActiveCategories(chatId, user) {
 
     buttons.push([{
       text: '🔙 Назад',
-      callback_data: 'back_to_add'
+      callback_data: 'back_to_main'
     }]);
 
     await sendMessage(chatId, 
       `📋 <b>Ваши категории (${selectedCategories.length})</b>\n` +
-      `Нажмите на категорию чтобы удалить её.`, 
+      `Нажмите на категорию чтобы удалить её.\n` +
+      `Для добавления новых категорий обратитесь к администратору.`, 
       { 
         reply_markup: { inline_keyboard: buttons },
         parse_mode: 'HTML'
@@ -487,27 +424,6 @@ async function sendLongMessage(chatId, text, options = {}) {
   }
   
   return true;
-}
-
-// ==================== ФУНКЦИЯ ПОИСКА ====================
-async function searchProducts(query) {
-  const data = await getProductsFromServer();
-  if (!data || !data.products) return [];
-  
-  const searchTerms = query.toLowerCase().split(' ');
-  
-  return data.products
-    .filter(p => {
-      const name = p.name.toLowerCase();
-      return searchTerms.every(term => name.includes(term));
-    })
-    .slice(0, 10)
-    .map(p => ({
-      code: p.code,
-      name: p.name,
-      price: p.priceToday || p.packPrice,
-      link: p.link
-    }));
 }
 
 // ==================== УВЕДОМЛЕНИЕ АДМИНА ====================
@@ -655,11 +571,10 @@ async function handleMessage(message) {
         await sendMessage(chatId, 
           '👋 С возвращением!\n\n' +
           '📋 <b>Команды:</b>\n' +
-          '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
           '/changes - изменения цен за сегодня\n' +
-          '/search - поиск товаров\n' +
+          '/status - проверить статус\n' +
           '/help - список всех команд'
         );
       } else if (user.status === 'pending') {
@@ -691,11 +606,10 @@ async function handleMessage(message) {
         '/start - приветствие\n' +
         '/help - это сообщение\n' +
         '/status - проверить статус\n' +
-        '/add - добавить категории для отслеживания\n' +
         '/list - показать выбранные категории\n' +
         '/goods - показать список товаров (только названия)\n' +
-        '/changes - показать изменения цен за сегодня\n' +
-        '/search <текст> - поиск товаров'
+        '/changes - показать изменения цен за сегодня\n\n' +
+        '📝 <i>Для изменения списка категорий обратитесь к администратору</i>'
       );
     } else if (text === '/status') {
       if (!checkRateLimit(userId, '/status')) {
@@ -711,11 +625,6 @@ async function handleMessage(message) {
         `✅ <b>Статус:</b> подтверждён\n` +
         `🆔 ID: <code>${userId}</code>${categoriesInfo}`
       );
-    } else if (text === '/add') {
-      if (!checkRateLimit(userId, '/add')) {
-        return;
-      }
-      await showAddCategories(chatId, user);
     } else if (text === '/list') {
       if (!checkRateLimit(userId, '/list')) {
         return;
@@ -729,7 +638,7 @@ async function handleMessage(message) {
       const selectedCategories = user?.selected_categories || [];
       
       if (selectedCategories.length === 0) {
-        await sendMessage(chatId, '❌ Сначала выберите категории через /add');
+        await sendMessage(chatId, '❌ У вас нет выбранных категорий');
         return;
       }
 
@@ -759,7 +668,7 @@ async function handleMessage(message) {
       const userCategories = user?.selected_categories || [];
       
       if (userCategories.length === 0) {
-        await sendMessage(chatId, '❌ Сначала выберите категории через /add');
+        await sendMessage(chatId, '❌ У вас нет выбранных категорий');
         return;
       }
       
@@ -783,33 +692,6 @@ async function handleMessage(message) {
         await sendMessage(chatId, formatProductFull(change));
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-    } else if (text.startsWith('/search ')) {
-      if (!checkRateLimit(userId, '/search')) {
-        return;
-      }
-      
-      const query = text.replace('/search ', '').trim();
-      if (query.length < 3) {
-        await sendMessage(chatId, '⚠️ Введите минимум 3 символа для поиска');
-        return;
-      }
-      
-      const results = await searchProducts(query);
-      
-      if (results.length === 0) {
-        await sendMessage(chatId, `🔍 По запросу "${query}" ничего не найдено`);
-        return;
-      }
-      
-      let message = `🔍 <b>Результаты поиска "${query}":</b>\n\n`;
-      results.forEach((p, i) => {
-        message += `${i + 1}. <b>${p.name}</b>\n`;
-        message += `   Код: <code>${p.code}</code>\n`;
-        message += `   Цена: ${p.price} руб.\n`;
-        message += `   🔗 <a href="https://www.21vek.by${p.link}">Ссылка</a>\n\n`;
-      });
-      
-      await sendMessage(chatId, message);
     } else {
       await sendMessage(chatId, '❓ Неизвестная команда. /help');
     }
@@ -904,26 +786,7 @@ async function handleCallback(query) {
       return;
     }
 
-    // ==================== ОБРАБОТКА ДОБАВЛЕНИЯ КАТЕГОРИЙ (ДЛЯ ОДОБРЕННЫХ) ====================
-    if (data.startsWith('add_')) {
-      const parts = data.split('_');
-      const index = parseInt(parts[1]);
-      const category = parts.slice(2).join('_');
-      
-      const selectedCategories = user?.selected_categories || [];
-      
-      if (!selectedCategories.includes(category)) {
-        selectedCategories.push(category);
-        await updateUserCategories(fromId, selectedCategories);
-        await answerCallback(query.id, `✅ ${category} добавлена`);
-      } else {
-        await answerCallback(query.id, `⚠️ Уже добавлена`);
-      }
-      
-      await showAddCategories(message.chat.id, user);
-      return;
-    }
-
+    // ==================== УДАЛЕНИЕ КАТЕГОРИЙ (ДЛЯ ОДОБРЕННЫХ) ====================
     if (data.startsWith('remove_')) {
       const parts = data.split('_');
       const index = parseInt(parts[1]);
@@ -936,36 +799,20 @@ async function handleCallback(query) {
       
       await answerCallback(query.id, `❌ ${category} удалена`);
       
+      // Показываем обновленный список
       await showActiveCategories(message.chat.id, user);
       return;
     }
 
-    if (data === 'back_to_add') {
+    if (data === 'back_to_main') {
       await answerCallback(query.id, '🔙 Возврат');
-      await showAddCategories(message.chat.id, user);
-      return;
-    }
-
-    if (data === 'done_adding') {
-      const count = user?.selected_categories?.length || 0;
-      
-      await answerCallback(query.id, `✅ Выбрано: ${count}`);
-      
-      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: message.chat.id,
-          message_id: message.message_id,
-          reply_markup: { inline_keyboard: [] }
-        })
-      });
-
       await sendMessage(message.chat.id, 
-        `✅ Выбрано категорий: ${count}\n\n` +
-        `Используйте /list чтобы увидеть список\n` +
-        `/goods для просмотра товаров\n` +
-        `/changes для просмотра изменений цен.`
+        '👋 Главное меню\n\n' +
+        '📋 <b>Команды:</b>\n' +
+        '/list - показать выбранные категории\n' +
+        '/goods - показать список товаров\n' +
+        '/changes - изменения цен за сегодня\n' +
+        '/status - проверить статус'
       );
       return;
     }
@@ -1043,11 +890,10 @@ async function handleCallback(query) {
         await sendMessage(user.chat_id, 
           '✅ <b>Доступ подтверждён!</b>' + categoriesText + '\n\n' +
           '📋 <b>Команды:</b>\n' +
-          '/add - добавить категории для отслеживания\n' +
           '/list - показать выбранные категории\n' +
           '/goods - показать список товаров\n' +
           '/changes - изменения цен за сегодня\n' +
-          '/search - поиск товаров\n' +
+          '/status - проверить статус\n' +
           '/help - список всех команд'
         );
         await answerCallback(query.id, '✅ Подтверждено');
