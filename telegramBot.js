@@ -89,7 +89,7 @@ function checkRateLimit(userId, command) {
 async function getUser(telegramId) {
   try {
     const result = await db.execute({
-      sql: 'SELECT status, chat_id, selected_categories FROM telegram_users WHERE telegram_id = ?',
+      sql: 'SELECT status, chat_id, selected_categories, username, first_name FROM telegram_users WHERE telegram_id = ?',
       args: [telegramId]
     });
     
@@ -525,10 +525,10 @@ async function handleCallback(query) {
     const message = query.message;
     const fromId = query.from.id;
 
-    // Получаем пользователя для проверки
+    // Получаем пользователя (может быть null)
     const user = await getUser(fromId);
 
-    // === ВЫБОР КАТЕГОРИИ ===
+    // === ВЫБОР КАТЕГОРИИ — доступно даже без авторизации ===
     if (data.startsWith('sel_cat_')) {
       const parts = data.split('_');
       const userId = parseInt(parts[2]);
@@ -565,7 +565,7 @@ async function handleCallback(query) {
       return;
     }
 
-    // === ЗАВЕРШЕНИЕ ВЫБОРА ===
+    // === ЗАВЕРШЕНИЕ ВЫБОРА — доступно даже без авторизации ===
     if (data.startsWith('finish_selection_')) {
       const userId = parseInt(data.replace('finish_selection_', ''));
 
@@ -620,25 +620,30 @@ async function handleCallback(query) {
       return;
     }
 
-    // === АДМИНСКИЕ КНОПКИ ===
-    if (!user || user.status !== 'approved') {
-      await answerCallback(query.id, '⛔ Сначала авторизуйтесь через /start');
-      return;
-    }
-
-    if (fromId != ADMIN_CHAT_ID) {
-      await answerCallback(query.id, '⛔ Нет прав');
-      return;
-    }
-
-    if (data.startsWith('approve_')) {
-      const userId = data.replace('approve_', '');
-      const targetUser = await getUser(userId);
-      
-      if (targetUser) {
-        // Админ подтверждает пользователя
-        await updateUserStatus(userId, 'approved', 'admin');
+    // === АДМИНСКИЕ КНОПКИ — админу можно всё ===
+    if (fromId == ADMIN_CHAT_ID) {
+      // Админ подтверждает пользователя (в том числе себя)
+      if (data.startsWith('approve_')) {
+        const userId = data.replace('approve_', '');
         
+        // Получаем пользователя (может быть null)
+        let targetUser = await getUser(userId);
+        
+        // Если пользователя нет в БД — создаём его как approved
+        if (!targetUser) {
+          // Создаём пользователя с минимальными данными
+          await db.execute({
+            sql: `INSERT INTO telegram_users (telegram_id, status, selected_categories) 
+                  VALUES (?, 'approved', '[]')`,
+            args: [userId]
+          });
+          targetUser = await getUser(userId);
+        } else {
+          // Если есть — обновляем статус
+          await updateUserStatus(userId, 'approved', 'admin');
+        }
+        
+        // Убираем клавиатуру
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -650,65 +655,80 @@ async function handleCallback(query) {
         });
 
         await sendMessage(ADMIN_CHAT_ID, `✅ Пользователь ${userId} подтверждён`);
-        await sendMessage(targetUser.chat_id, 
-          '✅ <b>Доступ подтверждён!</b>\n\n' +
-          '📋 <b>Команды:</b>\n' +
-          '/add - добавить категории для отслеживания\n' +
-          '/list - показать выбранные категории\n' +
-          '/goods - показать список товаров\n' +
-          '/changes - изменения цен за сегодня\n' +
-          '/help - список всех команд'
-        );
+        
+        // Отправляем уведомление пользователю, если есть chat_id
+        if (targetUser?.chat_id) {
+          await sendMessage(targetUser.chat_id, 
+            '✅ <b>Доступ подтверждён!</b>\n\n' +
+            '📋 <b>Команды:</b>\n' +
+            '/add - добавить категории для отслеживания\n' +
+            '/list - показать выбранные категории\n' +
+            '/goods - показать список товаров\n' +
+            '/changes - изменения цен за сегодня\n' +
+            '/help - список всех команд'
+          );
+        }
+        
         await answerCallback(query.id, '✅ Подтверждено');
+        return;
       }
-      return;
+
+      if (data.startsWith('reject_')) {
+        const userId = data.replace('reject_', '');
+        const targetUser = await getUser(userId);
+        
+        if (targetUser) {
+          await updateUserStatus(userId, 'rejected', 'admin');
+          
+          await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: message.chat.id,
+              message_id: message.message_id,
+              reply_markup: { inline_keyboard: [] }
+            })
+          });
+
+          await sendMessage(ADMIN_CHAT_ID, `❌ Пользователь ${userId} отклонён`);
+          if (targetUser.chat_id) {
+            await sendMessage(targetUser.chat_id, '⛔ <b>Доступ отклонён</b>');
+          }
+          await answerCallback(query.id, '❌ Отклонено');
+        }
+        return;
+      }
+
+      if (data.startsWith('block_')) {
+        const userId = data.replace('block_', '');
+        const targetUser = await getUser(userId);
+        
+        if (targetUser) {
+          await updateUserStatus(userId, 'blocked', 'admin');
+          
+          await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: message.chat.id,
+              message_id: message.message_id,
+              reply_markup: { inline_keyboard: [] }
+            })
+          });
+
+          await sendMessage(ADMIN_CHAT_ID, `🚫 Пользователь ${userId} заблокирован`);
+          if (targetUser.chat_id) {
+            await sendMessage(targetUser.chat_id, '🚫 <b>Вы заблокированы</b>');
+          }
+          await answerCallback(query.id, '🚫 Заблокировано');
+        }
+        return;
+      }
     }
 
-    if (data.startsWith('reject_')) {
-      const userId = data.replace('reject_', '');
-      const targetUser = await getUser(userId);
-      
-      if (targetUser) {
-        await updateUserStatus(userId, 'rejected', 'admin');
-        
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: message.chat.id,
-            message_id: message.message_id,
-            reply_markup: { inline_keyboard: [] }
-          })
-        });
-
-        await sendMessage(ADMIN_CHAT_ID, `❌ Пользователь ${userId} отклонён`);
-        await sendMessage(targetUser.chat_id, '⛔ <b>Доступ отклонён</b>');
-        await answerCallback(query.id, '❌ Отклонено');
-      }
-      return;
-    }
-
-    if (data.startsWith('block_')) {
-      const userId = data.replace('block_', '');
-      const targetUser = await getUser(userId);
-      
-      if (targetUser) {
-        await updateUserStatus(userId, 'blocked', 'admin');
-        
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: message.chat.id,
-            message_id: message.message_id,
-            reply_markup: { inline_keyboard: [] }
-          })
-        });
-
-        await sendMessage(ADMIN_CHAT_ID, `🚫 Пользователь ${userId} заблокирован`);
-        await sendMessage(targetUser.chat_id, '🚫 <b>Вы заблокированы</b>');
-        await answerCallback(query.id, '🚫 Заблокировано');
-      }
+    // === ДЛЯ НЕ-АДМИНОВ — проверяем авторизацию ===
+    if (!user || user.status !== 'approved') {
+      await answerCallback(query.id, '⛔ Сначала авторизуйтесь через /start');
       return;
     }
 
