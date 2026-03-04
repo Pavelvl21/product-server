@@ -6,6 +6,9 @@ const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const SECRET_KEY = process.env.SECRET_KEY;
 const API_URL = process.env.API_URL || 'http://localhost:3000';
 
+// Хранилище для rate limiting
+const userLastCommand = new Map();
+
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
 async function sendMessage(chatId, text, options = {}) {
@@ -45,6 +48,29 @@ async function answerCallback(callbackId, text) {
   } catch (err) {
     console.error('Callback answer error:', err);
   }
+}
+
+function checkRateLimit(userId, command) {
+  const key = `${userId}_${command}`;
+  const now = Date.now();
+  const lastTime = userLastCommand.get(key) || 0;
+  
+  const limits = {
+    '/changes': 10000,
+    '/goods': 5000,
+    '/status': 2000,
+    'default': 1000
+  };
+  
+  const limit = limits[command] || limits.default;
+  if (now - lastTime < limit) return false;
+  
+  userLastCommand.set(key, now);
+  if (userLastCommand.size > 1000) {
+    const oldKeys = [...userLastCommand.keys()].filter(k => now - userLastCommand.get(k) > 60000);
+    oldKeys.forEach(k => userLastCommand.delete(k));
+  }
+  return true;
 }
 
 // ==================== РАБОТА С БД ====================
@@ -205,44 +231,49 @@ ${circleEmoji} <b>${product.product_name}</b>
 `;
 }
 
-// ==================== ВЫБОР КАТЕГОРИЙ ====================
+// ==================== НОВАЯ ФУНКЦИЯ ПОКАЗА КАТЕГОРИЙ ====================
 
-async function showCategorySelection(chatId, userId, selected = []) {
+async function showCategoryList(chatId, userId) {
   const categories = await getCategoriesFromServer();
   if (!categories.length) {
     await sendMessage(chatId, '📭 Категории временно недоступны');
     return;
   }
 
-  const keyboard = [];
-  let row = [];
+  // Показываем заголовок
+  await sendMessage(chatId, 
+    '📋 <b>Доступные категории</b>\n\n' +
+    'Нажимайте на кнопки под каждой категорией, чтобы добавить её в свой список.\n' +
+    'После выбора всех нужных категорий нажмите "✅ Завершить выбор".'
+  );
 
-  categories.forEach((cat, index) => {
-    const isSelected = selected.includes(cat);
-    row.push({
-      text: (isSelected ? '✅ ' : '⬜ ') + cat,
-      callback_data: `sel_cat_${userId}_${index}`
-    });
-    if (row.length === 2) {
-      keyboard.push([...row]);
-      row = [];
-    }
-  });
+  // Отправляем каждую категорию отдельным сообщением с кнопкой
+  for (const category of categories) {
+    const keyboard = {
+      inline_keyboard: [[
+        { text: '➕ Добавить', callback_data: `add_cat_${userId}_${category}` }
+      ]]
+    };
+    
+    await sendMessage(chatId, 
+      `📌 <b>${category}</b>`,
+      { reply_markup: keyboard, parse_mode: 'HTML' }
+    );
+    
+    // Небольшая задержка, чтобы не спамить
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+
+  // Кнопка завершения выбора
+  const finishKeyboard = {
+    inline_keyboard: [[
+      { text: '✅ Завершить выбор', callback_data: `finish_selection_${userId}` }
+    ]]
+  };
   
-  if (row.length) keyboard.push(row);
-
-  keyboard.push([{
-    text: '✅ Завершить выбор',
-    callback_data: 'confirm_selection'
-  }]);
-
-  const selectedText = selected.length 
-    ? `\n\n✅ Выбрано:\n${selected.map(c => `• ${c}`).join('\n')}` 
-    : '';
-
-  await sendMessage(chatId,
-    `📁 Выберите категории для отслеживания:${selectedText}`,
-    { reply_markup: { inline_keyboard: keyboard } }
+  await sendMessage(chatId, 
+    '✅ Когда выберете все нужные категории, нажмите кнопку ниже:',
+    { reply_markup: finishKeyboard }
   );
 }
 
@@ -293,14 +324,14 @@ async function handleMessage(message) {
 
     if (user.status === 'approved') {
       if (!user.selection_locked) {
-        await showCategorySelection(chatId, userId, user.selected_categories || []);
+        await showCategoryList(chatId, userId);
       } else {
         await sendMessage(chatId, 
           '👋 Добро пожаловать!\n\n' +
           '📋 <b>Команды:</b>\n' +
           '/goods - список товаров\n' +
           '/changes - изменения цен\n' +
-          '/help - помощь'
+          '/status - статус'
         );
       }
     } else {
@@ -314,18 +345,9 @@ async function handleMessage(message) {
     return;
   }
 
-  // === КОМАНДЫ ===
-  if (text === '/help') {
-    await sendMessage(chatId,
-      '📋 <b>Команды:</b>\n\n' +
-      '/goods - список товаров\n' +
-      '/changes - изменения цен\n' +
-      '/status - статус'
-    );
-    return;
-  }
-
   if (text === '/status') {
+    if (!checkRateLimit(userId, '/status')) return;
+    
     const locked = user.selection_locked ? '🔒 Заблокирован' : '🔓 Можно выбрать';
     const categories = user.selected_categories || [];
     const catText = categories.length 
@@ -340,6 +362,8 @@ async function handleMessage(message) {
   }
 
   if (text === '/goods') {
+    if (!checkRateLimit(userId, '/goods')) return;
+    
     const categories = user.selected_categories || [];
     if (!categories.length) {
       await sendMessage(chatId, '❌ Категории не выбраны');
@@ -358,6 +382,8 @@ async function handleMessage(message) {
   }
 
   if (text === '/changes') {
+    if (!checkRateLimit(userId, '/changes')) return;
+    
     const categories = user.selected_categories || [];
     if (!categories.length) {
       await sendMessage(chatId, '❌ Категории не выбраны');
@@ -380,12 +406,8 @@ async function handleMessage(message) {
     return;
   }
 
-  await sendMessage(chatId, '❓ Неизвестная команда. /help');
+  await sendMessage(chatId, '❓ Неизвестная команда. /status');
 }
-
-// ==================== ОБРАБОТЧИК CALLBACK ====================
-
-// ==================== ОБРАБОТЧИК CALLBACK ====================
 
 // ==================== ОБРАБОТЧИК CALLBACK ====================
 
@@ -396,89 +418,62 @@ async function handleCallback(query) {
 
   console.log('📞 Callback:', data);
 
-  // === ВЫБОР КАТЕГОРИИ — редактируем текущее сообщение ===
-if (data.startsWith('sel_cat_')) {
-  const parts = data.split('_');
-  const userId = parseInt(parts[2]);
-  const catIndex = parseInt(parts[3]);
-  
-  if (userId !== fromId) {
-    await answerCallback(query.id, '⛔ Это не ваша сессия');
-    return;
-  }
+  // === ДОБАВЛЕНИЕ КАТЕГОРИИ ===
+  if (data.startsWith('add_cat_')) {
+    const parts = data.split('_');
+    const userId = parseInt(parts[2]);
+    const category = parts.slice(3).join('_');
 
-  const currentUser = await getUser(fromId);
-  if (!currentUser || currentUser.selection_locked) {
-    await answerCallback(query.id, '❌ Выбор уже завершён');
-    return;
-  }
-
-  const categories = await getCategoriesFromServer();
-  const category = categories[catIndex];
-  if (!category) {
-    await answerCallback(query.id, '❌ Категория не найдена');
-    return;
-  }
-
-  const selected = currentUser.selected_categories || [];
-  const updated = selected.includes(category)
-    ? selected.filter(c => c !== category)
-    : [...selected, category];
-
-  await updateUserCategories(fromId, updated);
-
-  // Формируем клавиатуру
-  const keyboard = [];
-  let row = [];
-  categories.forEach((cat, idx) => {
-    const isSelected = updated.includes(cat);
-    row.push({
-      text: (isSelected ? '✅ ' : '⬜ ') + cat,
-      callback_data: `sel_cat_${userId}_${idx}`
-    });
-    if (row.length === 2) {
-      keyboard.push([...row]);
-      row = [];
+    if (userId !== fromId) {
+      await answerCallback(query.id, '⛔ Это не ваша сессия');
+      return;
     }
-  });
-  if (row.length) keyboard.push(row);
-  keyboard.push([{
-    text: '✅ Завершить выбор',
-    callback_data: 'confirm_selection'
-  }]);
 
-  const selectedText = updated.length 
-    ? `\n\n✅ Выбрано:\n${updated.map(c => `• ${c}`).join('\n')}` 
-    : '';
+    const currentUser = await getUser(fromId);
+    if (!currentUser || currentUser.selection_locked) {
+      await answerCallback(query.id, '❌ Выбор уже завершён');
+      return;
+    }
 
-  // Сначала отвечаем с текстом
-  await answerCallback(query.id, `✅ ${category} ${selected.includes(category) ? 'убрана' : 'добавлена'}`);
-  
-  // Даём время
-  await new Promise(resolve => setTimeout(resolve, 100));
+    const selected = currentUser.selected_categories || [];
+    
+    if (selected.includes(category)) {
+      await answerCallback(query.id, '⚠️ Уже выбрано');
+      return;
+    }
 
-  // Обновляем сообщение
-  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: msg.chat.id,
-      message_id: msg.message_id,
-      text: `📁 Выберите категории для отслеживания:${selectedText}`,
-      parse_mode: 'HTML',
-      reply_markup: { inline_keyboard: keyboard }
-    })
-  });
+    const updated = [...selected, category];
+    await updateUserCategories(fromId, updated);
 
-  // Принудительно снимаем выделение
-  await answerCallback(query.id, '');
-  return;
-}
+    // Меняем кнопку на "✅ Добавлено"
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: msg.chat.id,
+        message_id: msg.message_id,
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '✅ Добавлено', callback_data: 'noop' }
+          ]]
+        }
+      })
+    });
+
+    await answerCallback(query.id, `✅ ${category} добавлена`);
+    return;
+  }
 
   // === ЗАВЕРШЕНИЕ ВЫБОРА ===
-  if (data === 'confirm_selection') {
-    const currentUser = await getUser(fromId);
+  if (data.startsWith('finish_selection_')) {
+    const userId = parseInt(data.replace('finish_selection_', ''));
     
+    if (userId !== fromId) {
+      await answerCallback(query.id, '⛔ Это не ваша сессия');
+      return;
+    }
+
+    const currentUser = await getUser(fromId);
     if (!currentUser) {
       await answerCallback(query.id, '❌ Пользователь не найден');
       return;
@@ -495,10 +490,9 @@ if (data.startsWith('sel_cat_')) {
       return;
     }
 
-    // Блокируем выбор
     await lockUserSelection(fromId);
     
-    // Убираем клавиатуру
+    // Убираем клавиатуру с кнопки завершения
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -510,7 +504,7 @@ if (data.startsWith('sel_cat_')) {
     });
 
     await sendMessage(msg.chat.id, 
-      '✅ <b>Категории сохранены!</b>\n\n' +
+      '✅ <b>Выбор завершён!</b>\n\n' +
       selected.map(c => `• ${c}`).join('\n') + `\n\n` +
       'Теперь вам доступны команды:\n' +
       '/goods - список товаров\n' +
@@ -527,7 +521,6 @@ if (data.startsWith('sel_cat_')) {
     return;
   }
 
-  // Подтверждение пользователя
   if (data.startsWith('approve_')) {
     const userId = data.replace('approve_', '');
     const targetUser = await getUser(userId);
@@ -541,7 +534,6 @@ if (data.startsWith('sel_cat_')) {
     
     await updateUserStatus(userId, 'approved', 'admin');
     
-    // Убираем клавиатуру у админа
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -552,7 +544,6 @@ if (data.startsWith('sel_cat_')) {
       })
     });
 
-    // Отправляем пользователю предложение выбрать категории
     const sent = await sendMessage(targetUser.chat_id, 
       '✅ <b>Ваш запрос одобрен!</b>\n\n' +
       'Теперь выберите категории товаров для отслеживания:'
@@ -560,14 +551,12 @@ if (data.startsWith('sel_cat_')) {
     
     console.log(`📤 Сообщение отправлено:`, sent ? 'ok' : 'fail');
     
-    // Показываем выбор категорий
-    await showCategorySelection(targetUser.chat_id, userId, []);
+    await showCategoryList(targetUser.chat_id, userId);
     
     await answerCallback(query.id, '✅ Подтверждено');
     return;
   }
 
-  // Отклонение пользователя
   if (data.startsWith('reject_')) {
     const userId = data.replace('reject_', '');
     const targetUser = await getUser(userId);
@@ -594,7 +583,6 @@ if (data.startsWith('sel_cat_')) {
     return;
   }
 
-  // Блокировка пользователя
   if (data.startsWith('block_')) {
     const userId = data.replace('block_', '');
     const targetUser = await getUser(userId);
@@ -618,6 +606,11 @@ if (data.startsWith('sel_cat_')) {
       }
       await answerCallback(query.id, '🚫 Заблокировано');
     }
+    return;
+  }
+
+  if (data === 'noop') {
+    await answerCallback(query.id, '✅');
     return;
   }
 
