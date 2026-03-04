@@ -420,6 +420,13 @@ async function handleMessage(message) {
       await sendMessage(chatId, formatSubscriberStats(stats));
       return;
     }
+
+    // Скрытая команда для проверки админства
+if (text === '/isAdmin') {
+  const isAdmin = (userId == ADMIN_CHAT_ID);
+  await sendMessage(chatId, isAdmin ? '✅ Да' : '❌ Нет');
+  return;
+}
   }
 
   // === ОБРАБОТКА /START ===
