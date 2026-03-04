@@ -151,6 +151,26 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ КАТЕГОРИЙ ====================
+app.get('/api/public/categories', async (req, res) => {
+  try {
+    // Получаем уникальные категории из products_info
+    const result = await db.execute(`
+      SELECT DISTINCT category 
+      FROM products_info 
+      WHERE category IS NOT NULL AND category != ''
+      ORDER BY category
+    `);
+    
+    const categories = result.rows.map(row => row.category);
+    res.json({ categories });
+    
+  } catch (err) {
+    console.error('Ошибка получения категорий:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 app.post('/api/register', authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -596,16 +616,15 @@ app.post('/api/telegram/webhook', async (req, res) => {
 
 // ==================== ПЛАНИРОВЩИКИ ====================
 
-const schedule = [
-  '30 0 * * *', '30 1 * * *', '30 6 * * *', '30 8 * * *',
-  '30 9 * * *', '30 10 * * *', '30 11 * * *', '0 12 * * *',
-  '30 12 * * *', '0 13 * * *', '30 13 * * *', '0 14 * * *',
-  '30 14 * * *', '0 15 * * *', '30 15 * * *', '0 16 * * *',
-  '30 16 * * *', '0 17 * * *', '30 17 * * *', '0 18 * * *',
-  '30 18 * * *', '30 19 * * *', '0 20 * * *'
+// Уменьшаем частоту обновлений до 4 раз в сутки
+const scheduleTimes = [
+  '30 6 * * *',   // 6:30
+  '30 12 * * *',  // 12:30
+  '30 18 * * *',  // 18:30
+  '30 0 * * *'    // 0:30
 ];
 
-schedule.forEach(cronTime => {
+scheduleTimes.forEach(cronTime => {
   cron.schedule(cronTime, () => {
     console.log(`⏰ Запуск обновления по расписанию ${cronTime}`);
     updateAllPrices().catch(err => {
