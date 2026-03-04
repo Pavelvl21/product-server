@@ -118,6 +118,7 @@ async function lockUserSelection(telegramId) {
       sql: 'UPDATE telegram_users SET selection_locked = ? WHERE telegram_id = ?',
       args: [true, telegramId]
     });
+    console.log(`🔒 Выбор заблокирован для ${telegramId}`);
   } catch (err) {
     console.error('Ошибка блокировки выбора:', err);
   }
@@ -384,6 +385,8 @@ async function handleMessage(message) {
 
 // ==================== ОБРАБОТЧИК CALLBACK ====================
 
+// ==================== ОБРАБОТЧИК CALLBACK ====================
+
 async function handleCallback(query) {
   const data = query.data;
   const msg = query.message;
@@ -391,44 +394,30 @@ async function handleCallback(query) {
 
   console.log('📞 Callback:', data);
 
-  // Получаем пользователя (может быть null)
-  const user = await getUser(fromId);
-
-  // === ВЫБОР КАТЕГОРИИ — доступно даже без авторизации ===
+  // === ВЫБОР КАТЕГОРИИ — редактируем текущее сообщение ===
   if (data.startsWith('sel_cat_')) {
     const parts = data.split('_');
     const userId = parseInt(parts[2]);
     const catIndex = parseInt(parts[3]);
     
-    // Проверяем, что это тот же пользователь
     if (userId !== fromId) {
       await answerCallback(query.id, '⛔ Это не ваша сессия');
       return;
     }
 
-    // Получаем пользователя из БД
     const currentUser = await getUser(fromId);
-    if (!currentUser) {
-      await answerCallback(query.id, '❌ Пользователь не найден');
-      return;
-    }
-
-    // Проверяем, не заблокирован ли уже выбор
-    if (currentUser.selection_locked) {
+    if (!currentUser || currentUser.selection_locked) {
       await answerCallback(query.id, '❌ Выбор уже завершён');
       return;
     }
 
-    // Получаем список категорий и находим нужную по индексу
     const categories = await getCategoriesFromServer();
     const category = categories[catIndex];
-    
     if (!category) {
       await answerCallback(query.id, '❌ Категория не найдена');
       return;
     }
 
-    // Обновляем список выбранных категорий
     const selected = currentUser.selected_categories || [];
     const updated = selected.includes(category)
       ? selected.filter(c => c !== category)
@@ -436,12 +425,48 @@ async function handleCallback(query) {
 
     // Сохраняем в БД
     await updateUserCategories(fromId, updated);
+
+    // Формируем обновлённую клавиатуру
+    const keyboard = [];
+    let row = [];
+
+    categories.forEach((cat, idx) => {
+      const isSelected = updated.includes(cat);
+      row.push({
+        text: (isSelected ? '✅ ' : '⬜ ') + cat,
+        callback_data: `sel_cat_${userId}_${idx}`
+      });
+      if (row.length === 2) {
+        keyboard.push([...row]);
+        row = [];
+      }
+    });
     
-    // Отвечаем пользователю
+    if (row.length) keyboard.push(row);
+
+    keyboard.push([{
+      text: '✅ Завершить выбор',
+      callback_data: 'confirm_selection'
+    }]);
+
+    const selectedText = updated.length 
+      ? `\n\n✅ Выбрано:\n${updated.map(c => `• ${c}`).join('\n')}` 
+      : '';
+
+    // Редактируем текущее сообщение
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: msg.chat.id,
+        message_id: msg.message_id,
+        text: `📁 Выберите категории для отслеживания:${selectedText}`,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+      })
+    });
+
     await answerCallback(query.id, `✅ ${category} ${selected.includes(category) ? 'убрана' : 'добавлена'}`);
-    
-    // Показываем обновлённый выбор
-    await showCategorySelection(msg.chat.id, fromId, updated);
     return;
   }
 
@@ -578,7 +603,8 @@ async function handleCallback(query) {
         body: JSON.stringify({
           chat_id: msg.chat.id,
           message_id: msg.message_id,
-          reply_markup: { inline_keyboard: [] }
+          reply_markup: { inline_keyboard: []
+          }
         })
       });
 
