@@ -623,7 +623,9 @@ async function handleCallback(query) {
 // ==================== ЭКСПОРТЫ ====================
 
 export async function handleTelegramUpdate(update) {
+  console.log('🔥🔥🔥 Webhook сработал!', update);
   try {
+    console.log('🔥🔥🔥 Webhook сработал!', update);
     if (update.message) await handleMessage(update.message);
     if (update.callback_query) await handleCallback(update.callback_query);
   } catch (err) {
