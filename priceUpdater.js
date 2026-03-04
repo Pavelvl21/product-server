@@ -437,24 +437,30 @@ export async function updateAllPrices() {
     console.log(`❌ Ошибок: ${totalErrors}`);
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
     
+    // ========== ОТПРАВКА СТАТИСТИКИ АДМИНУ ==========
+    let adminMessage = `📊 <b>ОБНОВЛЕНИЕ ЦЕН ЗАВЕРШЕНО</b>\n\n`;
+    adminMessage += `📦 Всего товаров: ${totalProcessed}\n`;
+    adminMessage += `🔄 Изменений: ${totalChanged}\n`;
+    adminMessage += `📝 Новых записей: ${totalNewRecords}\n`;
+    adminMessage += `❌ Ошибок: ${totalErrors}\n`;
+    adminMessage += `⏱️ Время: ${totalTime} сек\n\n`;
+    
     if (Object.keys(categoryStats).length > 0) {
-      console.log('\n📊 **СТАТИСТИКА ПО КАТЕГОРИЯМ:**');
-      console.log('-'.repeat(40));
+      adminMessage += `📊 <b>Статистика по категориям:</b>\n`;
       
       const sortedCategories = Object.entries(categoryStats)
         .sort((a, b) => b[1].total - a[1].total);
       
       sortedCategories.forEach(([category, stats]) => {
         const changePercent = ((stats.changed / stats.total) * 100).toFixed(1);
-        const barLength = Math.round((stats.changed / stats.total) * 20);
-        const bar = '🟩'.repeat(barLength) + '⬜'.repeat(20 - barLength);
-        
-        console.log(`  ${category}:`);
-        console.log(`    📦 Всего: ${stats.total} товаров`);
-        console.log(`    🔄 Изменений: ${stats.changed} (${changePercent}%)`);
-        console.log(`    ${bar}`);
+        adminMessage += `\n<b>${category}:</b>\n`;
+        adminMessage += `   📦 Всего: ${stats.total} товаров\n`;
+        adminMessage += `   🔄 Изменений: ${stats.changed} (${changePercent}%)\n`;
       });
     }
+    
+    await sendTelegramMessage(adminMessage);
+    // =================================================
     
     console.log('='.repeat(60));
     console.log(`🕐 Завершено: ${new Date().toLocaleString()}`);
