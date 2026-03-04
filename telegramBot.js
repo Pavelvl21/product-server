@@ -58,13 +58,14 @@ function checkRateLimit(userId, command) {
   const now = Date.now();
   const lastTime = userLastCommand.get(key) || 0;
   
+  // Разные лимиты для разных команд
   const limits = {
-    '/changes': 10000,
-    '/goods': 5000,
-    '/add': 2000,
-    '/list': 2000,
-    '/status': 2000,
-    'default': 1000
+    '/changes': 10000, // 10 секунд
+    '/goods': 5000,    // 5 секунд
+    '/add': 2000,      // 2 секунды
+    '/list': 2000,     // 2 секунды
+    '/status': 2000,   // 2 секунды
+    'default': 1000    // 1 секунда
   };
   
   const limit = limits[command] || limits.default;
@@ -75,6 +76,7 @@ function checkRateLimit(userId, command) {
   
   userLastCommand.set(key, now);
   
+  // Очистка старых записей
   if (userLastCommand.size > 1000) {
     const oldKeys = [...userLastCommand.keys()]
       .filter(k => now - userLastCommand.get(k) > 60000);
@@ -161,7 +163,7 @@ async function getProductsFromServer() {
       headers: {
         'x-bot-key': SECRET_KEY
       },
-      timeout: 10000
+      timeout: 10000 // 10 секунд таймаут
     });
     
     if (!response.ok) {
@@ -347,8 +349,10 @@ async function showActiveCategories(chatId, user) {
 function formatPrice(price) {
   if (price === null || price === undefined) return '—';
   
+  // Форматируем число с двумя знаками после запятой
   const formatted = Math.abs(price).toFixed(2).replace('.', ',');
   
+  // Добавляем знак вручную
   if (price > 0) {
     return `+${formatted}`;
   } else if (price < 0) {
@@ -364,7 +368,7 @@ function formatProductSimple(product) {
 
 function formatProductFull(product) {
   const circleEmoji = product.isDecrease ? '🔴' : '🟢';
-  const changeValue = product.change;
+  const changeValue = product.change; // теперь это число со знаком (+ или -)
   
   return `
 ${circleEmoji} <b>${product.product_name}</b>
@@ -375,7 +379,8 @@ ${circleEmoji} <b>${product.product_name}</b>
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка на товар</a>
 `;
-}
+} 
+// 📆 Платеж: ${product.monthly_payment || '—'} руб./мес - это минимальный доступный платеж, даже с переплатой
 
 // ==================== ФУНКЦИЯ ДЛЯ РАЗБИВКИ ДЛИННЫХ СООБЩЕНИЙ ====================
 
@@ -482,6 +487,7 @@ async function handleMessage(message) {
       return;
     }
 
+    // Проверка авторизации для всех команд кроме /start
     if (!user) {
       await sendMessage(chatId, '❌ Сначала используйте /start');
       return;
@@ -596,6 +602,7 @@ async function handleCallback(query) {
     const message = query.message;
     const fromId = query.from.id;
 
+    // Получаем пользователя для проверки авторизации
     const user = await getUser(fromId);
     
     if (!user || user.status !== 'approved') {
@@ -673,6 +680,7 @@ async function handleCallback(query) {
       return;
     }
 
+    // Админские кнопки
     if (fromId != ADMIN_CHAT_ID) {
       await answerCallback(query.id, '⛔ Нет прав');
       return;
@@ -810,6 +818,7 @@ export function setupBotEndpoints(app, authenticateToken) {
     try {
       const { url } = req.body;
       
+      // Валидация URL
       if (!url || !url.startsWith('https://')) {
         return res.status(400).json({ error: 'URL должен начинаться с https://' });
       }
