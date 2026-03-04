@@ -340,6 +340,16 @@ async function handleMessage(message) {
   const lastName = message.from.last_name;
 
   console.log(`📨 ${text} от ${userId}`);
+//логирование
+  console.log(`🔍 Проверка пользователя ${userId}: ищем в БД...`);
+  
+  const user = await getUser(userId);
+  
+  console.log(`🔍 Результат getUser:`, user ? 'найден' : 'НЕ НАЙДЕН');
+  // конец логирования
+  if (user) {
+    console.log(`🔍 Статус: ${user.status}, категорий: ${user.selected_categories?.length || 0}`);
+  }
 
   const user = await getUser(userId);
 
