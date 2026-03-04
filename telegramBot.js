@@ -474,24 +474,149 @@ async function handleMessage(message) {
   }
 
   if (text === '/goods') {
-    if (!checkRateLimit(userId, '/goods')) return;
-    
-    const categories = user.selected_categories || [];
-    if (!categories.length) {
-      await sendMessage(chatId, '❌ Категории не выбраны');
-      return;
-    }
-
-    const products = await getProductsByCategory(categories);
-    if (!products.length) {
-      await sendMessage(chatId, '📭 Нет товаров');
-      return;
-    }
-
-    const list = products.map(p => `• ${p.name}`).join('\n');
-    await sendMessage(chatId, `📦 Товаров: ${products.length}\n\n${list}`);
+  console.log('='.repeat(50));
+  console.log(`🔍 [GOODS] Начало обработки команды /goods от пользователя ${userId}`);
+  console.log(`🔍 [GOODS] Время: ${new Date().toISOString()}`);
+  
+  // Проверка rate limit
+  console.log(`🔍 [GOODS] Проверка rate limit для ${userId}...`);
+  if (!checkRateLimit(userId, '/goods')) {
+    console.log(`❌ [GOODS] Rate limit сработал для ${userId}`);
+    await sendMessage(chatId, '⏳ Слишком частые запросы. Подождите несколько секунд.');
     return;
   }
+  console.log(`✅ [GOODS] Rate limit пройден`);
+
+  // Проверка пользователя
+  console.log(`🔍 [GOODS] Проверка пользователя ${userId}...`);
+  const user = await getUser(userId);
+  console.log(`🔍 [GOODS] Результат getUser:`, user ? 'найден' : 'НЕ НАЙДЕН');
+  
+  if (!user) {
+    console.log(`❌ [GOODS] Пользователь ${userId} не найден в БД`);
+    await sendMessage(chatId, '❌ Пользователь не найден. Используйте /start');
+    return;
+  }
+  
+  console.log(`🔍 [GOODS] Статус пользователя: ${user.status}`);
+  if (user.status !== 'approved') {
+    console.log(`❌ [GOODS] Пользователь ${userId} не подтвержден (статус: ${user.status})`);
+    await sendMessage(chatId, '❌ Ваш аккаунт не подтвержден');
+    return;
+  }
+
+  // Проверка категорий
+  console.log(`🔍 [GOODS] Категории пользователя:`, user.selected_categories || []);
+  const categories = user.selected_categories || [];
+  
+  if (!categories.length) {
+    console.log(`❌ [GOODS] У пользователя ${userId} нет выбранных категорий`);
+    await sendMessage(chatId, '❌ Категории не выбраны. Используйте /start для выбора категорий');
+    return;
+  }
+  console.log(`✅ [GOODS] Категории найдены: ${categories.length} шт.`);
+
+  // Получение данных с API
+  console.log(`🔍 [GOODS] Запрос к API /api/bot/products...`);
+  const startTime = Date.now();
+  
+  try {
+    const data = await getProductsFromServer();
+    const apiTime = Date.now() - startTime;
+    console.log(`🔍 [GOODS] API ответил за ${apiTime}мс`);
+    
+    if (!data) {
+      console.log(`❌ [GOODS] API вернул null или undefined`);
+      await sendMessage(chatId, '❌ Ошибка получения данных с сервера');
+      return;
+    }
+    
+    console.log(`🔍 [GOODS] API ответ:`, {
+      hasProducts: !!data.products,
+      productsCount: data.products?.length || 0,
+      today: data.today,
+      yesterday: data.yesterday
+    });
+    
+    if (!data.products || !Array.isArray(data.products)) {
+      console.log(`❌ [GOODS] data.products отсутствует или не массив`);
+      await sendMessage(chatId, '❌ Ошибка формата данных с сервера');
+      return;
+    }
+
+    // Фильтрация товаров по категориям
+    console.log(`🔍 [GOODS] Фильтрация товаров по категориям:`, categories);
+    const products = data.products.filter(p => categories.includes(p.category));
+    
+    console.log(`🔍 [GOODS] Результаты фильтрации:`, {
+      всего_товаров: data.products.length,
+      подходящих: products.length,
+      категории_в_товарах: [...new Set(data.products.map(p => p.category))],
+      категории_пользователя: categories
+    });
+
+    if (products.length === 0) {
+      console.log(`❌ [GOODS] Нет товаров в выбранных категориях`);
+      
+      // Проверим, есть ли вообще товары с такими категориями
+      const availableCategories = [...new Set(data.products.map(p => p.category))];
+      const missingCategories = categories.filter(c => !availableCategories.includes(c));
+      
+      if (missingCategories.length > 0) {
+        console.log(`❌ [GOODS] Следующие категории не найдены в товарах:`, missingCategories);
+        await sendMessage(chatId, 
+          `📭 Нет товаров в выбранных категориях.\n\n` +
+          `⚠️ Следующие категории пусты:\n${missingCategories.map(c => `• ${c}`).join('\n')}`
+        );
+      } else {
+        await sendMessage(chatId, '📭 В выбранных категориях нет товаров');
+      }
+      return;
+    }
+
+    console.log(`✅ [GOODS] Найдено товаров: ${products.length}`);
+
+    // Проверка длины сообщения
+    const productNames = products.map(p => `• ${p.name}`).join('\n');
+    const header = `📦 Товаров: ${products.length}\n\n`;
+    const fullMessage = header + productNames;
+    
+    console.log(`📏 [GOODS] Длина сообщения: ${fullMessage.length} символов`);
+    
+    if (fullMessage.length > 4000) {
+      console.log(`⚠️ [GOODS] Сообщение слишком длинное (${fullMessage.length} > 4000), отправляем частями`);
+      
+      await sendMessage(chatId, `📦 Найдено товаров: ${products.length}. Отправляю список частями...`);
+      
+      // Разбиваем на части по 50 товаров
+      const batchSize = 50;
+      for (let i = 0; i < products.length; i += batchSize) {
+        const batch = products.slice(i, i + batchSize);
+        const batchNames = batch.map(p => `• ${p.name}`).join('\n');
+        const batchHeader = `📋 Часть ${Math.floor(i/batchSize) + 1}/${Math.ceil(products.length/batchSize)} (${i+1}-${Math.min(i+batchSize, products.length)}):\n\n`;
+        const batchMessage = batchHeader + batchNames;
+        
+        console.log(`📏 [GOODS] Часть ${Math.floor(i/batchSize) + 1}: ${batchMessage.length} символов`);
+        await sendMessage(chatId, batchMessage);
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      
+      console.log(`✅ [GOODS] Все части отправлены`);
+    } else {
+      console.log(`✅ [GOODS] Отправка полного сообщения...`);
+      await sendMessage(chatId, fullMessage);
+    }
+
+    console.log(`✅ [GOODS] Команда /goods успешно выполнена для ${userId}`);
+    
+  } catch (error) {
+    console.error(`❌ [GOODS] Ошибка при выполнении команды:`, error);
+    await sendMessage(chatId, '❌ Произошла ошибка при получении списка товаров');
+  }
+  
+  console.log('='.repeat(50));
+  return;
+}
 
   if (text === '/changes') {
     if (!checkRateLimit(userId, '/changes')) return;
