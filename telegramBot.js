@@ -458,6 +458,8 @@ if (data.startsWith('approve_')) {
   const user = await getUser(userId);
   
   if (user) {
+    console.log(`✅ Подтверждаю пользователя ${userId}, chat_id: ${user.chat_id}`);
+    
     await updateUserStatus(userId, 'approved', 'admin');
     
     // Убираем клавиатуру у админа
@@ -472,15 +474,20 @@ if (data.startsWith('approve_')) {
     });
 
     // Отправляем пользователю предложение выбрать категории
-    await sendMessage(user.chat_id, 
+    const sent = await sendMessage(user.chat_id, 
       '✅ <b>Ваш запрос одобрен!</b>\n\n' +
       'Теперь выберите категории товаров для отслеживания:'
     );
+    
+    console.log(`📤 Сообщение отправлено:`, sent ? 'ok' : 'fail');
     
     // Показываем выбор категорий
     await showCategorySelection(user.chat_id, userId, []);
     
     await answerCallback(query.id, '✅ Подтверждено');
+  } else {
+    console.log(`❌ Пользователь ${userId} не найден`);
+    await answerCallback(query.id, '❌ Пользователь не найден');
   }
   return;
 }
