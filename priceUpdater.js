@@ -1,5 +1,6 @@
 import db from './database.js';
-import { sendTelegramMessage, formatPriceChangeNotification, notifyPriceChange } from './telegramBot.js';
+import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
+import { notifyPriceChange } from './telegramBroadcast.js';
 
 async function insertPriceRecord(code, name, price, timestamp) {
   await db.execute({
@@ -49,7 +50,7 @@ async function saveProductData(product, timestamp) {
     };
 
     if (todayRecord.rows.length === 0) {
-      // Первая запись за сегодня - логируем только если были изменения
+      // Первая запись за сегодня
       if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
         console.log(`📝 Первая запись за ${today} для ${code} (цена изменилась: ${lastPrice} → ${price})`);
         await insertPriceRecord(code, product.name, price, now);
@@ -71,7 +72,7 @@ async function saveProductData(product, timestamp) {
           formatPriceChangeNotification
         );
       } else {
-        // Первая запись, но цена не изменилась - просто сохраняем без лога
+        // Первая запись, но цена не изменилась - просто сохраняем без уведомлений
         await insertPriceRecord(code, product.name, price, now);
       }
       
@@ -98,7 +99,7 @@ async function saveProductData(product, timestamp) {
         );
         
       } else {
-        // 🔇 ПОЛНАЯ ТИШИНА - ничего не логируем для неизменившихся цен
+        // Цена не изменилась - ничего не делаем и не логируем
       }
     }
 
@@ -239,7 +240,6 @@ export async function updateAllPrices() {
     let totalNewRecords = 0;
     let totalErrors = 0;
 
-    // Для статистики по категориям
     const categoryStats = {};
 
     const processBatch = async (batch, batchIndex) => {
@@ -277,7 +277,6 @@ export async function updateAllPrices() {
           return { processed: 0, changed: 0, newRecords: 0, errors: 0 };
         }
 
-        // Получаем данные рассрочки
         const productsForPartlyPay = [];
         for (const product of products) {
           productsForPartlyPay.push({
@@ -327,13 +326,11 @@ export async function updateAllPrices() {
           try {
             batchProcessed++;
             
-            // Получаем категорию для статистики
             let category = 'Товары';
             if (product.categories && product.categories.length > 0) {
               category = product.categories[product.categories.length - 1].name;
             }
             
-            // Инициализируем статистику по категории
             if (!categoryStats[category]) {
               categoryStats[category] = { total: 0, changed: 0 };
             }
@@ -341,7 +338,6 @@ export async function updateAllPrices() {
             
             const today = new Date().toISOString().split('T')[0];
             
-            // Проверяем, была ли сегодня запись
             const todayRecord = await db.execute({
               sql: `SELECT id FROM price_history 
                     WHERE product_code = ? AND DATE(updated_at) = ? 
@@ -349,7 +345,6 @@ export async function updateAllPrices() {
               args: [product.code.toString(), today]
             });
             
-            // Получаем последнюю цену
             const lastRecord = await db.execute({
               sql: `SELECT price FROM price_history 
                     WHERE product_code = ? 
@@ -360,14 +355,12 @@ export async function updateAllPrices() {
             const lastPrice = lastRecord.rows[0]?.price;
             const currentPrice = parseFloat(product.packPrice || product.price);
             
-            // Проверяем, изменилась ли цена
             const isChanged = lastPrice !== undefined && Math.abs(currentPrice - lastPrice) > 0.01;
             
             if (isChanged) {
               batchChanged++;
               categoryStats[category].changed++;
               
-              // Логируем только изменения
               const changeSymbol = currentPrice > lastPrice ? '⬆️' : '⬇️';
               const changeValue = (currentPrice - lastPrice).toFixed(2);
               const changePercent = ((currentPrice - lastPrice) / lastPrice * 100).toFixed(1);
@@ -409,7 +402,6 @@ export async function updateAllPrices() {
       }
     };
 
-    // Запускаем параллельную обработку
     for (let i = 0; i < batches.length; i += CONCURRENT_LIMIT) {
       const currentBatches = batches.slice(i, i + CONCURRENT_LIMIT);
       console.log(`\n🔄 Запуск группы из ${currentBatches.length} параллельных пачек`);
@@ -427,7 +419,6 @@ export async function updateAllPrices() {
       
       processedBatches += currentBatches.length;
       
-      // Показываем прогресс
       const percentComplete = Math.round((processedBatches / batches.length) * 100);
       console.log(`\n📊 Прогресс: ${processedBatches}/${batches.length} пачек (${percentComplete}%)`);
       console.log(`   Обработано товаров: ${totalProcessed}, изменений: ${totalChanged}, ошибок: ${totalErrors}`);
@@ -435,7 +426,6 @@ export async function updateAllPrices() {
 
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
     
-    // Финальная статистика
     console.log('\n' + '='.repeat(60));
     console.log(`🏁 **ОБНОВЛЕНИЕ ЗАВЕРШЕНО**`);
     console.log('='.repeat(60));
@@ -447,7 +437,6 @@ export async function updateAllPrices() {
     console.log(`❌ Ошибок: ${totalErrors}`);
     console.log(`⏱️  Время выполнения: ${totalTime} сек`);
     
-    // Статистика по категориям
     if (Object.keys(categoryStats).length > 0) {
       console.log('\n📊 **СТАТИСТИКА ПО КАТЕГОРИЯМ:**');
       console.log('-'.repeat(40));
