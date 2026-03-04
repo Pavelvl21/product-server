@@ -19,7 +19,6 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const MY_SECRET_KEY = process.env.SECRET_KEY;
 
-// Проверка критических переменных окружения
 if (!JWT_SECRET) {
   console.error('❌ JWT_SECRET не задан');
   process.exit(1);
@@ -30,12 +29,13 @@ if (!MY_SECRET_KEY) {
   process.exit(1);
 }
 
-// Инициализация таблиц БД
 await initTables();
+
+// Доверяем прокси (Koyeb)
+app.set('trust proxy', 1);
 
 // ==================== БЕЗОПАСНОСТЬ ====================
 
-// 1. Helmet для заголовков безопасности
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -47,31 +47,26 @@ app.use(helmet({
   },
 }));
 
-// 2. Rate limiting для API
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 минут
-  max: 100, // максимум 100 запросов с одного IP
+  windowMs: 15 * 60 * 1000,
+  max: 100,
   message: { error: 'Слишком много запросов, попробуйте позже' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 const authLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 час
-  max: 5, // 5 попыток входа
+  windowMs: 60 * 60 * 1000,
+  max: 5,
   message: { error: 'Слишком много попыток входа, попробуйте через час' },
   skipSuccessfulRequests: true,
 });
 
-// Применяем rate limiting к API маршрутам
 app.use('/api/', apiLimiter);
 
-// ==================== МИДЛВАРЫ ====================
-
-app.use(express.json({ limit: '1mb' })); // Ограничение размера тела запроса
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static('public'));
 
-// CORS для фронта
 app.use((req, res, next) => {
   const allowedOrigins = [
     'https://price-hunter-bel.vercel.app',
@@ -91,8 +86,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// ==================== ВАЛИДАЦИЯ JOI ====================
-
 const schemas = {
   email: Joi.string().email().required(),
   password: Joi.string().min(6).max(100).required(),
@@ -100,8 +93,6 @@ const schemas = {
   codes: Joi.array().items(Joi.string().pattern(/^\d{1,12}$/)).min(1).max(100),
   telegramUrl: Joi.string().uri().required()
 };
-
-// ==================== МИДЛВАРЫ АВТОРИЗАЦИИ ====================
 
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -134,57 +125,30 @@ function authenticateBot(req, res, next) {
   next();
 }
 
-// ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
-
 function validateEmail(email) {
   const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return re.test(email);
 }
 
 function sanitizeInput(str) {
-  return str.replace(/[<>]/g, ''); // Удаляем потенциально опасные символы
+  return str.replace(/[<>]/g, '');
 }
-
-// ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ ====================
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// ==================== ПУБЛИЧНЫЙ ЭНДПОИНТ ДЛЯ КАТЕГОРИЙ (НОВЫЙ) ====================
-app.get('/api/public/categories', async (req, res) => {
-  try {
-    // Получаем уникальные категории из products_info
-    const result = await db.execute(`
-      SELECT DISTINCT category 
-      FROM products_info 
-      WHERE category IS NOT NULL AND category != ''
-      ORDER BY category
-    `);
-    
-    const categories = result.rows.map(row => row.category);
-    res.json({ categories });
-    
-  } catch (err) {
-    console.error('Ошибка получения категорий:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
 });
 
 app.post('/api/register', authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
     
-    // Валидация
     await schemas.email.validateAsync(username);
     await schemas.password.validateAsync(password);
     
-    // Дополнительная проверка email
     if (!validateEmail(username)) {
       return res.status(400).json({ error: 'Некорректный email' });
     }
 
-    // Санитизация
     const sanitizedUsername = sanitizeInput(username);
 
     const allowed = await db.execute({
@@ -221,7 +185,6 @@ app.post('/api/login', authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
     
-    // Валидация
     await schemas.email.validateAsync(username);
     await schemas.password.validateAsync(password);
 
@@ -251,8 +214,6 @@ app.post('/api/login', authLimiter, async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
-
-// ==================== ЭНДПОИНТЫ ДЛЯ АДМИНА ====================
 
 app.post('/api/allowed-emails', authenticateBot, async (req, res) => {
   try {
@@ -285,8 +246,6 @@ app.get('/api/allowed-emails', authenticateBot, async (req, res) => {
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
-
-// ==================== ЭНДПОИНТ ДЛЯ БОТА ====================
 
 app.get('/api/bot/products', authenticateBot, async (req, res) => {
   try {
@@ -359,8 +318,6 @@ app.get('/api/bot/products', authenticateBot, async (req, res) => {
   }
 });
 
-// ==================== ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ ====================
-
 app.get('/api/codes', authenticateToken, async (req, res) => {
   try {
     const result = await db.execute('SELECT code FROM product_codes ORDER BY created_at DESC');
@@ -375,7 +332,6 @@ app.post('/api/codes', authenticateToken, async (req, res) => {
   try {
     const { code } = req.body;
     
-    // Валидация
     await schemas.code.validateAsync(code);
 
     const count = await db.execute('SELECT COUNT(*) as c FROM product_codes');
@@ -410,7 +366,6 @@ app.post('/api/codes/bulk', authenticateToken, async (req, res) => {
   try {
     const { codes } = req.body;
     
-    // Валидация
     await schemas.codes.validateAsync(codes);
 
     const results = { added: [], failed: [] };
@@ -457,7 +412,6 @@ app.delete('/api/codes/:code', authenticateToken, async (req, res) => {
   try {
     const { code } = req.params;
     
-    // Валидация
     await schemas.code.validateAsync(code);
     
     await db.execute({ 
@@ -600,8 +554,6 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ТЕЛЕГРАМ БОТ ====================
-
 setupBotEndpoints(app, authenticateToken);
 
 app.post('/api/telegram/webhook', async (req, res) => {
@@ -613,8 +565,6 @@ app.post('/api/telegram/webhook', async (req, res) => {
     res.sendStatus(500);
   }
 });
-
-// ==================== ПЛАНИРОВЩИКИ (ОСТАВЛЕНО КАК БЫЛО) ====================
 
 const schedule = [
   '30 0 * * *', '30 1 * * *', '30 6 * * *', '30 8 * * *',
@@ -660,7 +610,6 @@ setTimeout(() => {
   });
 }, 10000);
 
-// Глобальный обработчик ошибок
 process.on('uncaughtException', (err) => {
   console.error('❌ Непойманное исключение:', err);
 });
