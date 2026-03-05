@@ -339,7 +339,7 @@ function formatPrice(price, options = {}) {
   // Форматируем с двумя знаками после запятой и заменяем точку на запятую
   const formatted = num.toFixed(2).replace('.', ',');
   
-  const { withSign = false, withComma = true } = options;
+  const { withSign = false } = options;
   
   if (!withSign) return formatted;
   
