@@ -334,7 +334,7 @@ function formatPrice(price) {
 export function formatProductFull(product) {
   const circleEmoji = product.isDecrease ? '🔴' : '🟢';
   
-  const installmentPrice = product.packPrice ? product.packPrice.toFixed(2).replace('.', ',') : '—';
+  const installmentPrice = product.packPrice ? product.packPrice : '—';
   
   return `
 ${circleEmoji} <b>${product.product_name}</b>
