@@ -661,6 +661,213 @@ const schedule = [
   '0 16 * * *'    // 16:00 UTC = 19:00 Минск
 ];
 
+// ==================== ЭНДПОИНТЫ ДЛЯ УПРАВЛЕНИЯ ПОЛКОЙ ПОЛЬЗОВАТЕЛЯ ====================
+
+/**
+ * Получить все товары на полке текущего пользователя
+ */
+app.get('/api/user/shelf', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Получаем товары с полки пользователя с полной информацией
+    const products = await db.execute({
+      sql: `
+        SELECT p.*, us.added_at as shelf_added_at
+        FROM products_info p
+        INNER JOIN user_shelf us ON p.code = us.product_code
+        WHERE us.user_id = ?
+        ORDER BY us.added_at DESC
+      `,
+      args: [userId]
+    });
+    
+    // Получаем историю цен для этих товаров (как в /api/products)
+    if (products.rows.length === 0) {
+      return res.json({ products: [] });
+    }
+    
+    const codes = products.rows.map(p => p.code);
+    const placeholders = codes.map(() => '?').join(',');
+    
+    const history = await db.execute({
+      sql: `
+        SELECT product_code, price, updated_at
+        FROM price_history
+        WHERE product_code IN (${placeholders})
+        AND updated_at >= datetime('now', '-90 days')
+        ORDER BY product_code, updated_at ASC
+      `,
+      args: codes
+    });
+
+    // Группируем историю по товарам
+    const historyByProduct = {};
+    history.rows.forEach(row => {
+      if (!historyByProduct[row.product_code]) {
+        historyByProduct[row.product_code] = [];
+      }
+      historyByProduct[row.product_code].push({
+        date: row.updated_at,
+        price: row.price
+      });
+    });
+
+    // Получаем все даты для единообразного формата
+    const dates = await db.execute(`
+      SELECT DISTINCT DATE(updated_at) as d
+      FROM price_history
+      WHERE updated_at >= datetime('now', '-90 days')
+      ORDER BY d ASC
+    `);
+    
+    const allDates = dates.rows.map(row => row.d);
+
+    // Формируем результат в том же формате, что и /api/products
+    const result = products.rows.map(p => {
+      const productHistory = historyByProduct[p.code] || [];
+      
+      const prices = {};
+      allDates.forEach(date => {
+        const dayRecords = productHistory.filter(h => h.date.startsWith(date));
+        if (dayRecords.length > 0) {
+          const last = dayRecords.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+          prices[date] = last.price;
+        } else {
+          const prev = productHistory.filter(h => h.date < date)
+            .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+          if (prev) prices[date] = prev.price;
+        }
+      });
+
+      return {
+        code: p.code,
+        name: p.name,
+        link: p.link,
+        category: p.category || 'Товары',
+        brand: p.brand || 'Без бренда',
+        packPrice: p.packPrice,
+        monthly_payment: p.monthly_payment,
+        no_overpayment_max_months: p.no_overpayment_max_months,
+        prices: prices,
+        priceHistory: productHistory,
+        currentPrice: p.last_price,
+        lastUpdate: p.last_update,
+        shelfAddedAt: p.shelf_added_at
+      };
+    });
+
+    res.json({ products: result });
+    
+  } catch (err) {
+    console.error('Ошибка получения полки пользователя:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+/**
+ * Добавить товар на полку пользователя
+ */
+app.post('/api/user/shelf/:code', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { code } = req.params;
+    
+    // Проверяем, существует ли товар
+    const productExists = await db.execute({
+      sql: 'SELECT code FROM products_info WHERE code = ?',
+      args: [code]
+    });
+    
+    if (productExists.rows.length === 0) {
+      return res.status(404).json({ error: 'Товар не найден в базе' });
+    }
+    
+    // Добавляем на полку (IGNORE если уже есть)
+    await db.execute({
+      sql: 'INSERT OR IGNORE INTO user_shelf (user_id, product_code) VALUES (?, ?)',
+      args: [userId, code]
+    });
+    
+    res.json({ 
+      success: true, 
+      message: 'Товар добавлен на полку' 
+    });
+    
+  } catch (err) {
+    console.error('Ошибка добавления на полку:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+/**
+ * Удалить товар с полки пользователя
+ */
+app.delete('/api/user/shelf/:code', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { code } = req.params;
+    
+    const result = await db.execute({
+      sql: 'DELETE FROM user_shelf WHERE user_id = ? AND product_code = ? RETURNING id',
+      args: [userId, code]
+    });
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Товар не найден на полке' });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Товар удален с полки' 
+    });
+    
+  } catch (err) {
+    console.error('Ошибка удаления с полки:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+/**
+ * Проверить статус нескольких товаров для текущего пользователя
+ */
+app.post('/api/user/shelf/status', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { codes } = req.body;
+    
+    if (!Array.isArray(codes) || codes.length === 0) {
+      return res.status(400).json({ error: 'Необходимо передать массив кодов' });
+    }
+    
+    if (codes.length > 100) {
+      return res.status(400).json({ error: 'Слишком много кодов (максимум 100)' });
+    }
+    
+    const placeholders = codes.map(() => '?').join(',');
+    const result = await db.execute({
+      sql: `
+        SELECT product_code 
+        FROM user_shelf 
+        WHERE user_id = ? AND product_code IN (${placeholders})
+      `,
+      args: [userId, ...codes]
+    });
+    
+    const shelfCodes = new Set(result.rows.map(r => r.product_code));
+    const status = {};
+    codes.forEach(code => {
+      status[code] = shelfCodes.has(code);
+    });
+    
+    res.json(status);
+    
+  } catch (err) {
+    console.error('Ошибка проверки статуса:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 schedule.forEach(cronTime => {
   cron.schedule(cronTime, () => {
     console.log(`⏰ Запуск обновления по расписанию ${cronTime}`);
