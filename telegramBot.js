@@ -358,7 +358,7 @@ ${circleEmoji} <b>${product.product_name}</b>
 📋 Код: <code>${product.product_code}</code>
 💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
 💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change)} (${product.percent}%)
-💳 РЦ в рассрочку: ${installmentPrice} руб.
+💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>
 `;
@@ -615,7 +615,7 @@ async function handleMessage(message) {
     
     if (!checkRateLimit(userId, '/status')) return;
     
-    const locked = user.selection_locked ? '🔒 Заблокирован' : '🔓 Можно выбрать';
+    const locked = user.selection_locked ? ' заблокирован' : ' можно выбрать';
     const categories = user.selected_categories || [];
     const catText = categories.length 
       ? `\n📁 Категории:\n${categories.map(c => `• ${c}`).join('\n')}` 
