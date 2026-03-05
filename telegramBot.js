@@ -306,7 +306,7 @@ async function getPriceChanges() {
   // Сортируем
   changes.sort((a, b) => {
     if (!a.isDecrease && !b.isDecrease) return b.change - a.change;
-    if (a.isDecrease && b.isDecrease) return a.change - b.change;
+    if (a.isDecrease && b.isDecrease) return b.change - a.change;
     return a.isDecrease ? 1 : -1;
   });
 
