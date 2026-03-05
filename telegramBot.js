@@ -329,11 +329,22 @@ async function getProductsByCategory(categories) {
 
 // ==================== ФОРМАТИРОВАНИЕ ====================
 
-function formatPrice(price) {
+function formatPrice(price, options = {}) {
   if (price === null || price === undefined) return '—';
-  const formatted = Math.abs(price).toFixed(2).replace('.', ',');
-  if (price > 0) return `+${formatted}`;
-  if (price < 0) return `-${formatted}`;
+  
+  // Безопасно преобразуем в число
+  const num = typeof price === 'string' ? parseFloat(price) : Number(price);
+  if (isNaN(num)) return '—';
+  
+  // Форматируем с двумя знаками после запятой и заменяем точку на запятую
+  const formatted = num.toFixed(2).replace('.', ',');
+  
+  const { withSign = false, withComma = true } = options;
+  
+  if (!withSign) return formatted;
+  
+  if (num > 0) return `+${formatted}`;
+  if (num < 0) return `-${formatted}`;
   return formatted;
 }
 
