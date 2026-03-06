@@ -285,29 +285,39 @@ async function getPriceChanges() {
   
   const changes = data.products
     .filter(p => p.priceToday && p.priceYesterday && Math.abs(p.priceToday - p.priceYesterday) > 0.01)
-    .map(p => ({
-      product_code: p.code,
-      product_name: p.name,
-      current_price: p.priceToday,
-      previous_price: p.priceYesterday,
-      change: p.priceToday - p.priceYesterday,
-      percent: ((p.priceToday - p.priceYesterday) / p.priceYesterday * 100).toFixed(1),
-      price: p.price,
-      packPrice: p.packPrice,
-      monthly_payment: p.monthly_payment,
-      no_overpayment_max_months: p.no_overpayment_max_months,
-      link: p.link,
-      category: p.category,
-      brand: p.brand,
-      isDecrease: p.priceToday < p.priceYesterday
-    }));
+    .map(p => {
+      // Логируем полученные из API данные
+      console.log(`📊 [getPriceChanges] Товар ${p.code}:`, {
+        name: p.name,
+        base_price: p.base_price,
+        packPrice: p.packPrice,
+        priceToday: p.priceToday
+      });
+      
+      return {
+        product_code: p.code,
+        product_name: p.name,
+        current_price: p.priceToday,
+        previous_price: p.priceYesterday,
+        change: p.priceToday - p.priceYesterday,
+        percent: ((p.priceToday - p.priceYesterday) / p.priceYesterday * 100).toFixed(1),
+        base_price: p.base_price,
+        packPrice: p.packPrice,
+        monthly_payment: p.monthly_payment,
+        no_overpayment_max_months: p.no_overpayment_max_months,
+        link: p.link,
+        category: p.category,
+        brand: p.brand,
+        isDecrease: p.priceToday < p.priceYesterday
+      };
+    });
 
   console.log(`📊 [getPriceChanges] Найдено изменений: ${changes.length} (⬆️ ${changes.filter(c => !c.isDecrease).length} / ⬇️ ${changes.filter(c => c.isDecrease).length})`);
   
   // Сортируем
   changes.sort((a, b) => {
     if (!a.isDecrease && !b.isDecrease) return b.change - a.change;
-    if (a.isDecrease && b.isDecrease) return b.change - a.change;
+    if (a.isDecrease && b.isDecrease) return a.change - b.change;
     return a.isDecrease ? 1 : -1;
   });
 
@@ -333,11 +343,9 @@ async function getProductsByCategory(categories) {
 function formatPrice(price, options = {}) {
   if (price === null || price === undefined) return '—';
   
-  // Безопасно преобразуем в число
   const num = typeof price === 'string' ? parseFloat(price) : Number(price);
   if (isNaN(num)) return '—';
   
-  // Форматируем с двумя знаками после запятой и заменяем точку на запятую
   const formatted = num.toFixed(2).replace('.', ',');
   
   const { withSign = false } = options;
@@ -352,25 +360,44 @@ function formatPrice(price, options = {}) {
 export function formatProductFull(product) {
   const circleEmoji = product.isDecrease ? '🔴' : '🟢';
   
-  const installmentPrice = product.packPrice ? product.packPrice : '—';
+  // Логируем входящие данные для отладки
+  console.log('🛠️ [formatProductFull] Входные данные:', {
+    code: product.product_code,
+    name: product.product_name,
+    base_price: product.base_price,
+    packPrice: product.packPrice,
+    previous_price: product.previous_price,
+    current_price: product.current_price
+  });
+  
+  // Для РЦ в рассрочку используем base_price (полная стоимость)
+  const retailPrice = product.base_price || product.packPrice || null;
+  
+  console.log(`   💳 Итоговая цена рассрочки: ${retailPrice} (${retailPrice ? 'есть' : 'НЕТ'})`);
   
   return `
-${circleEmoji} <b>${product.product_name}</b>
-📋 Код: <code>${product.product_code}</code>
-💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
-💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change)} (${product.percent}%)
-💳 РЦ в рассрочку: ${formatPrice(product.price)} руб.
+${circleEmoji} ${product.product_name}
+📋 Код: ${product.product_code}
+💰 Было: ${formatPrice(product.previous_price)} руб.
+💰 Стало: ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change, { withSign: true })} (${product.percent}%)
+💳 РЦ в рассрочку: ${formatPrice(retailPrice)} руб.
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>
 `;
 }
 
 export function formatPriceChangeNotification(product, oldPrice, newPrice) {
+  console.log('🔔 [formatPriceChangeNotification] Создание уведомления для товара:', {
+    code: product.code,
+    name: product.name,
+    basePrice: product.basePrice,
+    packPrice: product.packPrice
+  });
+  
   const change = newPrice - oldPrice;
   const percent = ((change / oldPrice) * 100).toFixed(1);
   const isDecrease = change < 0;
   
-  // Передаем все цены для formatProductFull
   return formatProductFull({
     product_code: product.code,
     product_name: product.name,
@@ -378,8 +405,8 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice) {
     previous_price: oldPrice,
     change: change,
     percent: percent,
-    base_price: product.basePrice || product.price,  // базовая цена
-    packPrice: product.packPrice,                    // актуальная цена
+    base_price: product.basePrice || product.price,
+    packPrice: product.packPrice,
     monthly_payment: product.monthly_payment,
     no_overpayment_max_months: product.no_overpayment_max_months,
     link: product.link,
@@ -619,14 +646,14 @@ async function handleMessage(message) {
     
     if (!checkRateLimit(userId, '/status')) return;
     
-    const locked = user.selection_locked ? ' заблокирован' : ' можно выбрать';
+    const locked = user.selection_locked ? 'заблокирован' : 'можно выбрать';
     const categories = user.selected_categories || [];
     const catText = categories.length 
       ? `\n📁 Категории:\n${categories.map(c => `• ${c}`).join('\n')}` 
       : '\n📁 Категории не выбраны';
     
     await sendMessage(chatId,
-      `✅ <b>Статус:</b> подтверждён\n` +
+      `✅ Статус: подтверждён\n` +
       `🔒 Выбор категорий: ${locked}${catText}`
     );
     
