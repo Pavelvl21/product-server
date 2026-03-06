@@ -930,15 +930,58 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     const limit = parseInt(req.query.limit) || 40;
     const offset = parseInt(req.query.offset) || 0;
     
-    // ВАЖНО: добавляем packPrice в SELECT!
+    // ПОЛУЧАЕМ ВСЕ НУЖНЫЕ ПОЛЯ + историю цен
     const products = await db.execute(`
-      SELECT p.*, us.added_at as shelf_added_at
+      SELECT 
+        p.code,
+        p.name,
+        p.last_price,
+        p.base_price,
+        p.packPrice,
+        p.monthly_payment,
+        p.no_overpayment_max_mont
+        p.category,
+        p.brand,
+        p.link,
+        p.last_update,
+        us.added_at as shelf_added_at
       FROM products_info p
       INNER JOIN user_shelf us ON p.code = us.product_code
       WHERE us.user_id = ${userId}
       ORDER BY us.added_at DESC
       LIMIT ${limit} OFFSET ${offset}
     `);
+    
+    // Получаем историю цен для этих товаров
+    if (products.rows.length > 0) {
+      const codes = products.rows.map(p => `'${p.code}'`).join(',');
+      
+      const history = await db.execute(`
+        SELECT product_code, price, updated_at
+        FROM price_history
+        WHERE product_code IN (${codes})
+        AND updated_at >= datetime('now', '-90 days')
+        ORDER BY product_code, updated_at ASC
+      `);
+
+      // Группируем историю по товарам
+      const historyByProduct = {};
+      history.rows.forEach(row => {
+        if (!historyByProduct[row.product_code]) {
+          historyByProduct[row.product_code] = [];
+        }
+        historyByProduct[row.product_code].push({
+          date: row.updated_at,
+          price: row.price
+        });
+      });
+
+      // Добавляем историю к каждому товару
+      products.rows = products.rows.map(p => ({
+        ...p,
+        priceHistory: historyByProduct[p.code] || []
+      }));
+    }
     
     const totalCount = await db.execute(`
       SELECT COUNT(*) as count 
@@ -947,7 +990,7 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     `);
     
     res.json({
-      products: products.rows,  // ← теперь тут есть packPrice!
+      products: products.rows,
       total: totalCount.rows[0].count,
       hasMore: offset + limit < totalCount.rows[0].count
     });
