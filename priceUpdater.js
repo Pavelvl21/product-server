@@ -11,11 +11,19 @@ async function insertPriceRecord(code, name, price, timestamp) {
 
 async function saveProductData(product, timestamp) {
   const code = product.code.toString();
+  
   // realPrice - актуальная цена (со скидкой) для отслеживания изменений
   const realPrice = parseFloat(product.packPrice || product.price);
   // basePrice - полная стоимость (без скидок) для отображения в "РЦ в рассрочку"
   const basePrice = product.price ? parseFloat(product.price) : null;
   const packPrice = product.packPrice ? parseFloat(product.packPrice) : null;
+  
+  // Логируем полученные цены для отладки
+  console.log(`💰 [saveProductData] Товар ${code}:`);
+  console.log(`   - realPrice (актуальная): ${realPrice}`);
+  console.log(`   - basePrice (полная): ${basePrice}`);
+  console.log(`   - packPrice (дубль): ${packPrice}`);
+  
   const now = timestamp || new Date();
   const today = now.toISOString().split('T')[0];
 
@@ -50,8 +58,8 @@ async function saveProductData(product, timestamp) {
       ...product,
       code,
       category,
-      realPrice,     // актуальная цена (для отслеживания изменений)
-      basePrice,     // базовая цена (для отображения в рассрочке)
+      realPrice,
+      basePrice,
       packPrice
     };
 
@@ -130,9 +138,9 @@ async function saveProductData(product, timestamp) {
       args: [
         code, 
         product.name, 
-        realPrice,        // last_price (актуальная цена)
-        basePrice,        // base_price (полная стоимость) - НОВОЕ!
-        packPrice,        // packPrice (актуальная, дубль)
+        realPrice,
+        basePrice,
+        packPrice,
         monthly_payment,
         no_overpayment_max_months,
         product.link || '', 
@@ -141,6 +149,8 @@ async function saveProductData(product, timestamp) {
         now.toISOString().slice(0, 19).replace('T', ' ')
       ]
     });
+    
+    console.log(`✅ [saveProductData] Товар ${code} сохранен в БД`);
 
   } catch (error) {
     console.error(`❌ Ошибка в saveProductData для ${code}:`, error.message);
