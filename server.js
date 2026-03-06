@@ -356,19 +356,20 @@ app.get('/api/bot/products', authenticateBot, async (req, res) => {
       yesterdayMap[row.product_code] = row.price;
     });
     
-    const result = products.rows.map(product => ({
-      code: product.code,
-      name: product.name,
-      link: product.link,
-      category: product.category || 'Товары',
-      brand: product.brand || 'Без бренда',
-      packPrice: product.packPrice,
-      monthly_payment: product.monthly_payment,
-      no_overpayment_max_months: product.no_overpayment_max_months,
-      priceToday: todayMap[product.code] || null,
-      priceYesterday: yesterdayMap[product.code] || null,
-      lastUpdate: product.last_update
-    }));
+const result = products.rows.map(product => ({
+  code: product.code,
+  name: product.name,
+  link: product.link,
+  category: product.category || 'Товары',
+  brand: product.brand || 'Без бренда',
+  base_price: product.base_price,  // ← добавляем
+  packPrice: product.packPrice,
+  monthly_payment: product.monthly_payment,
+  no_overpayment_max_months: product.no_overpayment_max_months,
+  priceToday: todayMap[product.code] || null,
+  priceYesterday: yesterdayMap[product.code] || null,
+  lastUpdate: product.last_update
+}));
     
     res.json({ 
       today,
