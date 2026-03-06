@@ -11,7 +11,10 @@ async function insertPriceRecord(code, name, price, timestamp) {
 
 async function saveProductData(product, timestamp) {
   const code = product.code.toString();
-  const price = parseFloat(product.packPrice || product.price);
+  // realPrice - актуальная цена (со скидкой) для отслеживания изменений
+  const realPrice = parseFloat(product.packPrice || product.price);
+  // basePrice - полная стоимость (без скидок) для отображения в "РЦ в рассрочку"
+  const basePrice = product.price ? parseFloat(product.price) : null;
   const packPrice = product.packPrice ? parseFloat(product.packPrice) : null;
   const now = timestamp || new Date();
   const today = now.toISOString().split('T')[0];
@@ -42,75 +45,80 @@ async function saveProductData(product, timestamp) {
 
     const lastPrice = lastRecord.rows[0]?.price;
 
-    // Создаем объект товара с категорией для уведомлений
-    const productWithCategory = {
+    // Создаем объект товара со всеми ценами для уведомлений
+    const productWithPrices = {
       ...product,
       code,
-      category
+      category,
+      realPrice,     // актуальная цена (для отслеживания изменений)
+      basePrice,     // базовая цена (для отображения в рассрочке)
+      packPrice
     };
 
     if (todayRecord.rows.length === 0) {
       // Первая запись за сегодня
-      if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
-        console.log(`📝 Первая запись за ${today} для ${code} (${lastPrice} → ${price})`);
-        await insertPriceRecord(code, product.name, price, now);
+      if (lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01) {
+        console.log(`📝 Первая запись за ${today} для ${code} (${lastPrice} → ${realPrice})`);
+        await insertPriceRecord(code, product.name, realPrice, now);
         
         const notification = formatPriceChangeNotification(
-          productWithCategory, 
+          productWithPrices, 
           lastPrice, 
-          price
+          realPrice
         );
         
         // Отправка админу
-       // await sendTelegramMessage(notification);
+        await sendTelegramMessage(notification);
         
         // Отправка всем подписанным на категорию
         await notifyPriceChange(
-          productWithCategory,
+          productWithPrices,
           lastPrice,
-          price,
+          realPrice,
           formatPriceChangeNotification
         );
       } else {
         // Первая запись, но цена не изменилась
-        await insertPriceRecord(code, product.name, price, now);
+        await insertPriceRecord(code, product.name, realPrice, now);
       }
       
     } else {
-      if (lastPrice !== undefined && Math.abs(price - lastPrice) > 0.01) {
-        console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${price}`);
-        await insertPriceRecord(code, product.name, price, now);
+      if (lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01) {
+        console.log(`🔄 Цена изменилась для ${code}: ${lastPrice} → ${realPrice}`);
+        await insertPriceRecord(code, product.name, realPrice, now);
         
         const notification = formatPriceChangeNotification(
-          productWithCategory, 
+          productWithPrices, 
           lastPrice, 
-          price
+          realPrice
         );
         
         // Отправка админу
-        // await sendTelegramMessage(notification);
+        await sendTelegramMessage(notification);
         
         // Отправка всем подписанным на категорию
         await notifyPriceChange(
-          productWithCategory,
+          productWithPrices,
           lastPrice,
-          price,
+          realPrice,
           formatPriceChangeNotification
         );
       }
     }
 
+    // Сохраняем в products_info с добавленным полем base_price
     await db.execute({
       sql: `
         INSERT INTO products_info (
-          code, name, last_price, packPrice, 
+          code, name, last_price, base_price, packPrice,
           monthly_payment, no_overpayment_max_months,
           link, category, brand, last_update
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(code) DO UPDATE SET
           name = excluded.name,
           last_price = excluded.last_price,
+          base_price = excluded.base_price,
           packPrice = excluded.packPrice,
           monthly_payment = excluded.monthly_payment,
           no_overpayment_max_months = excluded.no_overpayment_max_months,
@@ -122,8 +130,9 @@ async function saveProductData(product, timestamp) {
       args: [
         code, 
         product.name, 
-        price, 
-        packPrice,
+        realPrice,        // last_price (актуальная цена)
+        basePrice,        // base_price (полная стоимость) - НОВОЕ!
+        packPrice,        // packPrice (актуальная, дубль)
         monthly_payment,
         no_overpayment_max_months,
         product.link || '', 
