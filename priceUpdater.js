@@ -76,7 +76,7 @@ async function saveProductData(product, timestamp) {
         );
         
         // Отправка админу
-        await sendTelegramMessage(notification);
+       // await sendTelegramMessage(notification);
         
         // Отправка всем подписанным на категорию
         await notifyPriceChange(
@@ -102,7 +102,7 @@ async function saveProductData(product, timestamp) {
         );
         
         // Отправка админу
-        await sendTelegramMessage(notification);
+        //await sendTelegramMessage(notification);
         
         // Отправка всем подписанным на категорию
         await notifyPriceChange(
