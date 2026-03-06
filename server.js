@@ -356,20 +356,31 @@ app.get('/api/bot/products', authenticateBot, async (req, res) => {
       yesterdayMap[row.product_code] = row.price;
     });
     
-const result = products.rows.map(product => ({
-  code: product.code,
-  name: product.name,
-  link: product.link,
-  category: product.category || 'Товары',
-  brand: product.brand || 'Без бренда',
-  base_price: product.base_price,  // ← добавляем
-  packPrice: product.packPrice,
-  monthly_payment: product.monthly_payment,
-  no_overpayment_max_months: product.no_overpayment_max_months,
-  priceToday: todayMap[product.code] || null,
-  priceYesterday: yesterdayMap[product.code] || null,
-  lastUpdate: product.last_update
-}));
+    const result = products.rows.map(product => {
+      // Логируем данные из БД для отладки
+      console.log(`📡 [API] Товар ${product.code}:`, {
+        name: product.name,
+        base_price: product.base_price,
+        packPrice: product.packPrice
+      });
+      
+      return {
+        code: product.code,
+        name: product.name,
+        link: product.link,
+        category: product.category || 'Товары',
+        brand: product.brand || 'Без бренда',
+        base_price: product.base_price,  // ← ВАЖНО: добавляем base_price
+        packPrice: product.packPrice,
+        monthly_payment: product.monthly_payment,
+        no_overpayment_max_months: product.no_overpayment_max_months,
+        priceToday: todayMap[product.code] || null,
+        priceYesterday: yesterdayMap[product.code] || null,
+        lastUpdate: product.last_update
+      };
+    });
+    
+    console.log(`📡 [API] Всего товаров отправлено: ${result.length}`);
     
     res.json({ 
       today,
@@ -378,7 +389,7 @@ const result = products.rows.map(product => ({
     });
     
   } catch (err) {
-    console.error('Ошибка в /api/bot/products:', err);
+    console.error('❌ Ошибка в /api/bot/products:', err);
     res.status(500).json({ error: err.message });
   }
 });
