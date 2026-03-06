@@ -602,78 +602,67 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== НОВЫЙ ЭНДПОИНТ С ПАГИНАЦИЕЙ ====================
+// ==================== ПАГИНИРОВАННЫЕ ЭНДПОИНТЫ ====================
+
+// Матрица+ с пагинацией
 app.get('/api/products/paginated', authenticateToken, async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 40;
+    const limit = parseInt(req.query.limit) || 8;
     const offset = parseInt(req.query.offset) || 0;
     
-    console.log(`📊 Запрос пагинации: limit=${limit}, offset=${offset}`);
-
+    // Получаем только limit товаров
     const products = await db.execute(`
       SELECT * FROM products_info 
       ORDER BY last_update DESC 
       LIMIT ${limit} OFFSET ${offset}
     `);
     
+    // Получаем общее количество
     const totalCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
     
-    if (products.rows.length === 0) {
-      return res.json({
-        products: [],
-        total: totalCount.rows[0].count,
-        hasMore: false
-      });
-    }
-
-    const codes = products.rows.map(p => `'${p.code}'`).join(',');
-    
-    const history = await db.execute(`
-      SELECT product_code, price, updated_at
-      FROM price_history
-      WHERE product_code IN (${codes})
-      AND updated_at >= datetime('now', '-90 days')
-      ORDER BY product_code, updated_at ASC
-    `);
-
-    const historyByProduct = {};
-    history.rows.forEach(row => {
-      if (!historyByProduct[row.product_code]) {
-        historyByProduct[row.product_code] = [];
-      }
-      historyByProduct[row.product_code].push({
-        date: row.updated_at,
-        price: row.price
-      });
-    });
-
-    const result = products.rows.map(p => ({
-      code: p.code,
-      name: p.name,
-      link: p.link,
-      category: p.category || 'Товары',
-      brand: p.brand || 'Без бренда',
-      base_price: p.base_price,
-      packPrice: p.packPrice,
-      monthly_payment: p.monthly_payment,
-      no_overpayment_max_months: p.no_overpayment_max_months,
-      currentPrice: p.last_price,
-      lastUpdate: p.last_update,
-      priceHistory: historyByProduct[p.code] || []
-    }));
-
     res.json({
-      products: result,
+      products: products.rows,
       total: totalCount.rows[0].count,
       hasMore: offset + limit < totalCount.rows[0].count
     });
-
+    
   } catch (err) {
-    console.error('❌ Ошибка в /api/products/paginated:', err);
-    res.status(500).json({ 
-      error: 'Ошибка сервера',
-      details: err.message 
+    console.error('❌ Ошибка пагинации:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Полка с пагинацией
+app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 8;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    const products = await db.execute(`
+      SELECT p.*, us.added_at as shelf_added_at
+      FROM products_info p
+      INNER JOIN user_shelf us ON p.code = us.product_code
+      WHERE us.user_id = ${userId}
+      ORDER BY us.added_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `);
+    
+    const totalCount = await db.execute(`
+      SELECT COUNT(*) as count 
+      FROM user_shelf 
+      WHERE user_id = ${userId}
+    `);
+    
+    res.json({
+      products: products.rows,
+      total: totalCount.rows[0].count,
+      hasMore: offset + limit < totalCount.rows[0].count
     });
+    
+  } catch (err) {
+    console.error('❌ Ошибка полки:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
