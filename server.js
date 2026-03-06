@@ -910,6 +910,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
   }
 });
 
+
 // ==================== ПОЛКА ПОЛЬЗОВАТЕЛЯ С ПАГИНАЦИЕЙ ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
@@ -917,6 +918,7 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     const limit = parseInt(req.query.limit) || 40;
     const offset = parseInt(req.query.offset) || 0;
     
+    // ВАЖНО: добавляем packPrice в SELECT!
     const products = await db.execute(`
       SELECT p.*, us.added_at as shelf_added_at
       FROM products_info p
@@ -933,7 +935,7 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     `);
     
     res.json({
-      products: products.rows,
+      products: products.rows,  // ← теперь тут есть packPrice!
       total: totalCount.rows[0].count,
       hasMore: offset + limit < totalCount.rows[0].count
     });
