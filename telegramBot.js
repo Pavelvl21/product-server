@@ -292,6 +292,7 @@ async function getPriceChanges() {
       previous_price: p.priceYesterday,
       change: p.priceToday - p.priceYesterday,
       percent: ((p.priceToday - p.priceYesterday) / p.priceYesterday * 100).toFixed(1),
+      price: p.price,
       packPrice: p.packPrice,
       monthly_payment: p.monthly_payment,
       no_overpayment_max_months: p.no_overpayment_max_months,
@@ -358,7 +359,7 @@ ${circleEmoji} <b>${product.product_name}</b>
 📋 Код: <code>${product.product_code}</code>
 💰 <b>Было:</b> ${formatPrice(product.previous_price)} руб.
 💰 <b>Стало:</b> ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change)} (${product.percent}%)
-💳 РЦ в рассрочку: ${formatPrice(product.packPrice)} руб.
+💳 РЦ в рассрочку: ${formatPrice(product.price)} руб.
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>
 `;
@@ -375,6 +376,7 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice) {
     previous_price: oldPrice,
     change: change,
     percent: percent,
+    price: product.price
     packPrice: product.packPrice,
     monthly_payment: product.monthly_payment,
     no_overpayment_max_months: product.no_overpayment_max_months,
