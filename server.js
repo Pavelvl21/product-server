@@ -356,30 +356,20 @@ app.get('/api/bot/products', authenticateBot, async (req, res) => {
       yesterdayMap[row.product_code] = row.price;
     });
     
-    const result = products.rows.map(product => {
-      console.log(`📡 [API] Товар ${product.code}:`, {
-        name: product.name,
-        base_price: product.base_price,
-        packPrice: product.packPrice
-      });
-      
-      return {
-        code: product.code,
-        name: product.name,
-        link: product.link,
-        category: product.category || 'Товары',
-        brand: product.brand || 'Без бренда',
-        base_price: product.base_price,
-        packPrice: product.packPrice,
-        monthly_payment: product.monthly_payment,
-        no_overpayment_max_months: product.no_overpayment_max_months,
-        priceToday: todayMap[product.code] || null,
-        priceYesterday: yesterdayMap[product.code] || null,
-        lastUpdate: product.last_update
-      };
-    });
-    
-    console.log(`📡 [API] Всего товаров отправлено: ${result.length}`);
+    const result = products.rows.map(product => ({
+      code: product.code,
+      name: product.name,
+      link: product.link,
+      category: product.category || 'Товары',
+      brand: product.brand || 'Без бренда',
+      base_price: product.base_price,
+      packPrice: product.packPrice,
+      monthly_payment: product.monthly_payment,
+      no_overpayment_max_months: product.no_overpayment_max_months,
+      priceToday: todayMap[product.code] || null,
+      priceYesterday: yesterdayMap[product.code] || null,
+      lastUpdate: product.last_update
+    }));
     
     res.json({ 
       today,
@@ -567,16 +557,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
         }
       });
 
-      const filteredHistory = [];
-      let lastPrice = null;
-      
-      allProductHistory.forEach(record => {
-        if (lastPrice === null || Math.abs(record.price - lastPrice) > 0.01) {
-          filteredHistory.push(record);
-          lastPrice = record.price;
-        }
-      });
-
       return {
         code: p.code,
         name: p.name,
@@ -588,7 +568,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
         monthly_payment: p.monthly_payment,
         no_overpayment_max_months: p.no_overpayment_max_months,
         prices: prices,
-        priceHistory: filteredHistory,
+        priceHistory: allProductHistory,
         currentPrice: p.last_price,
         lastUpdate: p.last_update
       };
@@ -602,14 +582,14 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ПАГИНИРОВАННЫЕ ЭНДПОИНТЫ ====================
-
-// Матрица+ с пагинацией
+// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ МАТРИЦЫ+ ====================
 app.get('/api/products/paginated', authenticateToken, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 8;
     const offset = parseInt(req.query.offset) || 0;
     
+    console.log(`📊 Запрос пагинации матрицы: limit=${limit}, offset=${offset}`);
+
     // Получаем только limit товаров
     const products = await db.execute(`
       SELECT * FROM products_info 
@@ -620,49 +600,65 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
     // Получаем общее количество
     const totalCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
     
-    res.json({
-      products: products.rows,
-      total: totalCount.rows[0].count,
-      hasMore: offset + limit < totalCount.rows[0].count
-    });
-    
-  } catch (err) {
-    console.error('❌ Ошибка пагинации:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+    if (products.rows.length === 0) {
+      return res.json({
+        products: [],
+        total: totalCount.rows[0].count,
+        hasMore: false
+      });
+    }
 
-// Полка с пагинацией
-app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 8;
-    const offset = parseInt(req.query.offset) || 0;
+    // Получаем коды товаров для запроса истории
+    const codes = products.rows.map(p => `'${p.code}'`).join(',');
     
-    const products = await db.execute(`
-      SELECT p.*, us.added_at as shelf_added_at
-      FROM products_info p
-      INNER JOIN user_shelf us ON p.code = us.product_code
-      WHERE us.user_id = ${userId}
-      ORDER BY us.added_at DESC
-      LIMIT ${limit} OFFSET ${offset}
+    // Получаем ВСЮ историю цен для этих товаров
+    const history = await db.execute(`
+      SELECT product_code, price, updated_at
+      FROM price_history
+      WHERE product_code IN (${codes})
+      ORDER BY product_code, updated_at ASC
     `);
-    
-    const totalCount = await db.execute(`
-      SELECT COUNT(*) as count 
-      FROM user_shelf 
-      WHERE user_id = ${userId}
-    `);
-    
+
+    // Группируем историю по товарам
+    const historyByProduct = {};
+    history.rows.forEach(row => {
+      if (!historyByProduct[row.product_code]) {
+        historyByProduct[row.product_code] = [];
+      }
+      historyByProduct[row.product_code].push({
+        date: row.updated_at,
+        price: row.price
+      });
+    });
+
+    // Формируем результат с ПОЛНОЙ историей цен
+    const result = products.rows.map(p => ({
+      code: p.code,
+      name: p.name,
+      link: p.link,
+      category: p.category || 'Товары',
+      brand: p.brand || 'Без бренда',
+      base_price: p.base_price,
+      packPrice: p.packPrice,
+      monthly_payment: p.monthly_payment,
+      no_overpayment_max_months: p.no_overpayment_max_months,
+      currentPrice: p.last_price,
+      lastUpdate: p.last_update,
+      priceHistory: historyByProduct[p.code] || []
+    }));
+
     res.json({
-      products: products.rows,
+      products: result,
       total: totalCount.rows[0].count,
       hasMore: offset + limit < totalCount.rows[0].count
     });
-    
+
   } catch (err) {
-    console.error('❌ Ошибка полки:', err);
-    res.status(500).json({ error: err.message });
+    console.error('❌ Ошибка в /api/products/paginated:', err);
+    res.status(500).json({ 
+      error: 'Ошибка сервера',
+      details: err.message 
+    });
   }
 });
 
@@ -698,7 +694,6 @@ app.get('/api/user/shelf', authenticateToken, async (req, res) => {
         SELECT product_code, price, updated_at
         FROM price_history
         WHERE product_code IN (${placeholders})
-        AND updated_at >= datetime('now', '-90 days')
         ORDER BY product_code, updated_at ASC
       `,
       args: codes
@@ -715,48 +710,21 @@ app.get('/api/user/shelf', authenticateToken, async (req, res) => {
       });
     });
 
-    const dates = await db.execute(`
-      SELECT DISTINCT DATE(updated_at) as d
-      FROM price_history
-      WHERE updated_at >= datetime('now', '-90 days')
-      ORDER BY d ASC
-    `);
-    
-    const allDates = dates.rows.map(row => row.d);
-
-    const result = products.rows.map(p => {
-      const productHistory = historyByProduct[p.code] || [];
-      
-      const prices = {};
-      allDates.forEach(date => {
-        const dayRecords = productHistory.filter(h => h.date.startsWith(date));
-        if (dayRecords.length > 0) {
-          const last = dayRecords.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
-          prices[date] = last.price;
-        } else {
-          const prev = productHistory.filter(h => h.date < date)
-            .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
-          if (prev) prices[date] = prev.price;
-        }
-      });
-
-      return {
-        code: p.code,
-        name: p.name,
-        link: p.link,
-        category: p.category || 'Товары',
-        brand: p.brand || 'Без бренда',
-        base_price: p.base_price,
-        packPrice: p.packPrice,
-        monthly_payment: p.monthly_payment,
-        no_overpayment_max_months: p.no_overpayment_max_months,
-        prices: prices,
-        priceHistory: productHistory,
-        currentPrice: p.last_price,
-        lastUpdate: p.last_update,
-        shelfAddedAt: p.shelf_added_at
-      };
-    });
+    const result = products.rows.map(p => ({
+      code: p.code,
+      name: p.name,
+      link: p.link,
+      category: p.category || 'Товары',
+      brand: p.brand || 'Без бренда',
+      base_price: p.base_price,
+      packPrice: p.packPrice,
+      monthly_payment: p.monthly_payment,
+      no_overpayment_max_months: p.no_overpayment_max_months,
+      priceHistory: historyByProduct[p.code] || [],
+      currentPrice: p.last_price,
+      lastUpdate: p.last_update,
+      shelfAddedAt: p.shelf_added_at
+    }));
 
     res.json({ products: result });
     
@@ -827,15 +795,16 @@ app.delete('/api/user/shelf/:code', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ПОЛКА ПОЛЬЗОВАТЕЛЯ С ПАГИНАЦИЕЙ ====================
+// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ ПОЛКИ ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 40;
+    const limit = parseInt(req.query.limit) || 8;
     const offset = parseInt(req.query.offset) || 0;
     
     console.log(`📦 Запрос полки: userId=${userId}, limit=${limit}, offset=${offset}`);
-    
+
+    // Получаем товары с полки
     const products = await db.execute(`
       SELECT 
         p.code,
@@ -857,20 +826,23 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
       LIMIT ${limit} OFFSET ${offset}
     `);
     
+    const totalCount = await db.execute(`
+      SELECT COUNT(*) as count 
+      FROM user_shelf 
+      WHERE user_id = ${userId}
+    `);
+    
+    // Если есть товары, получаем для них историю цен
     if (products.rows.length > 0) {
-      const codes = products.rows.map(p => p.code);
-      const placeholders = codes.map(() => '?').join(',');
+      const codes = products.rows.map(p => `'${p.code}'`).join(',');
       
-      const history = await db.execute({
-        sql: `
-          SELECT product_code, price, updated_at
-          FROM price_history
-          WHERE product_code IN (${placeholders})
-          AND updated_at >= datetime('now', '-90 days')
-          ORDER BY product_code, updated_at ASC
-        `,
-        args: codes
-      });
+      // Получаем ВСЮ историю цен
+      const history = await db.execute(`
+        SELECT product_code, price, updated_at
+        FROM price_history
+        WHERE product_code IN (${codes})
+        ORDER BY product_code, updated_at ASC
+      `);
 
       const historyByProduct = {};
       history.rows.forEach(row => {
@@ -883,17 +855,12 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
         });
       });
 
+      // Добавляем историю к каждому товару
       products.rows = products.rows.map(p => ({
         ...p,
         priceHistory: historyByProduct[p.code] || []
       }));
     }
-    
-    const totalCount = await db.execute(`
-      SELECT COUNT(*) as count 
-      FROM user_shelf 
-      WHERE user_id = ${userId}
-    `);
     
     console.log(`✅ Полка: ${products.rows.length} товаров, всего: ${totalCount.rows[0].count}`);
     
