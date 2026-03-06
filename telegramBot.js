@@ -376,7 +376,7 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice) {
     previous_price: oldPrice,
     change: change,
     percent: percent,
-    price: product.price
+    price: product.price,
     packPrice: product.packPrice,
     monthly_payment: product.monthly_payment,
     no_overpayment_max_months: product.no_overpayment_max_months,
