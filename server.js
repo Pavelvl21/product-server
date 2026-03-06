@@ -1026,6 +1026,48 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== СТАТИСТИКА ДЛЯ ФИЛЬТРОВ ====================
+app.get('/api/filter-stats', authenticateToken, async (req, res) => {
+  try {
+    // Статистика по категориям
+    const categoryStats = await db.execute(`
+      SELECT category, COUNT(*) as count 
+      FROM products_info 
+      WHERE category IS NOT NULL AND category != ''
+      GROUP BY category
+      ORDER BY category
+    `);
+    
+    // Статистика по брендам
+    const brandStats = await db.execute(`
+      SELECT brand, COUNT(*) as count 
+      FROM products_info 
+      WHERE brand IS NOT NULL AND brand != ''
+      GROUP BY brand
+      ORDER BY brand
+    `);
+    
+    const categories = {};
+    categoryStats.rows.forEach(row => {
+      categories[row.category] = row.count;
+    });
+    
+    const brands = {};
+    brandStats.rows.forEach(row => {
+      brands[row.brand] = row.count;
+    });
+    
+    res.json({
+      categories,
+      brands
+    });
+    
+  } catch (err) {
+    console.error('Ошибка получения статистики фильтров:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 setupBotEndpoints(app, authenticateToken);
 
 app.post('/api/telegram/webhook', async (req, res) => {
