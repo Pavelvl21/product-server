@@ -600,6 +600,115 @@ app.get('/api/products', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
+// ==================== ПОЛЬЗОВАТЕЛЬСКИЕ ЭНДПОИНТЫ ====================
+
+// Информация о пользователе
+app.get('/api/user/info', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const user = await db.execute({
+      sql: 'SELECT id, username, created_at, telegram_id FROM users WHERE id = ?',
+      args: [userId]
+    });
+    
+    if (user.rows.length === 0) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    
+    // Проверяем, подтвержден ли Telegram
+    const telegramVerified = user.rows[0].telegram_id !== null;
+    
+    res.json({
+      id: user.rows[0].id,
+      email: user.rows[0].username,
+      created_at: user.rows[0].created_at,
+      telegram_verified: telegramVerified
+    });
+    
+  } catch (err) {
+    console.error('Ошибка получения информации о пользователе:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// Статистика пользователя
+app.get('/api/user/stats', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Количество товаров в мониторинге
+    const monitoringCount = await db.execute({
+      sql: 'SELECT COUNT(*) as count FROM user_shelf WHERE user_id = ?',
+      args: [userId]
+    });
+    
+    // Количество изменений за последние 7 дней
+    const changesCount = await db.execute({
+      sql: `
+        SELECT COUNT(DISTINCT ph.id) as count
+        FROM user_shelf us
+        INNER JOIN price_history ph ON us.product_code = ph.product_code
+        WHERE us.user_id = ? AND ph.updated_at >= datetime('now', '-7 days')
+      `,
+      args: [userId]
+    });
+    
+    res.json({
+      monitoringCount: monitoringCount.rows[0].count,
+      changesCount: changesCount.rows[0].count
+    });
+    
+  } catch (err) {
+    console.error('Ошибка получения статистики:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// Смена пароля
+app.post('/api/user/change-password', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { currentPassword, newPassword } = req.body;
+    
+    // Валидация
+    await schemas.password.validateAsync(newPassword);
+    
+    // Получаем текущий хеш пароля
+    const user = await db.execute({
+      sql: 'SELECT password_hash FROM users WHERE id = ?',
+      args: [userId]
+    });
+    
+    if (user.rows.length === 0) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    
+    // Проверяем текущий пароль
+    const valid = await bcrypt.compare(currentPassword, user.rows[0].password_hash);
+    if (!valid) {
+      return res.status(401).json({ error: 'Неверный текущий пароль' });
+    }
+    
+    // Хешируем новый пароль
+    const hash = await bcrypt.hash(newPassword, 10);
+    
+    // Обновляем пароль
+    await db.execute({
+      sql: 'UPDATE users SET password_hash = ? WHERE id = ?',
+      args: [hash, userId]
+    });
+    
+    res.json({ message: 'Пароль успешно изменен' });
+    
+  } catch (err) {
+    if (err.isJoi) {
+      return res.status(400).json({ error: 'Пароль должен быть не менее 6 символов' });
+    }
+    console.error('Ошибка смены пароля:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
 
 // ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ МАТРИЦЫ+ С МУЛЬТИФИЛЬТРАМИ ====================
 app.get('/api/products/paginated', authenticateToken, async (req, res) => {
