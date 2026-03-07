@@ -688,47 +688,59 @@ async function handleMessage(message) {
     return;
   }
 
-  // === /GOODS ===
-  if (text === '/goods') {
-    logCommand(userId, '/goods', 'start');
-    
-    if (!checkRateLimit(userId, '/goods')) return;
+// === /GOODS ===
+if (text === '/goods') {
+  logCommand(userId, '/goods', 'start');
+  
+  if (!checkRateLimit(userId, '/goods')) return;
 
-    const categories = user.selected_categories || [];
-    if (!categories.length) {
-      logCommand(userId, '/goods', 'error', 'нет категорий');
-      await sendMessage(chatId, '❌ Категории не выбраны');
-      return;
-    }
-
-    const products = await getProductsByCategory(categories);
-    if (!products.length) {
-      logCommand(userId, '/goods', 'warning', 'нет товаров');
-      await sendMessage(chatId, '📭 Нет товаров');
-      return;
-    }
-
-    logCommand(userId, '/goods', 'success', `найдено товаров:${products.length}`);
-    await sendMessage(chatId, `📦 Найдено товаров: ${products.length}. Отправляю список...`);
-
-    const batchSize = 50;
-    let sentCount = 0;
-    
-    for (let i = 0; i < products.length; i += batchSize) {
-      const batch = products.slice(i, i + batchSize);
-      const list = batch.map(p => `• ${p.name}`).join('\n');
-      const header = `📋 Часть ${Math.floor(i/batchSize) + 1}/${Math.ceil(products.length/batchSize)}:\n\n`;
-      
-      await sendMessage(chatId, header + list);
-      sentCount += batch.length;
-      
-      logCommand(userId, '/goods', 'success', `отправлена часть ${Math.floor(i/batchSize) + 1}: ${batch.length} товаров`);
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-    
-    logCommand(userId, '/goods', 'success', `всего отправлено:${sentCount} товаров`);
+  // Получаем товары из мониторинга пользователя
+  const monitoringCodes = await getUserMonitoringProducts(userId);
+  
+  if (monitoringCodes.length === 0) {
+    logCommand(userId, '/goods', 'warning', 'нет товаров в мониторинге');
+    await sendMessage(chatId, '📭 У вас нет товаров в мониторинге');
     return;
   }
+
+  // Получаем все товары с сервера
+  const data = await getProductsFromServer();
+  if (!data?.products) {
+    logCommand(userId, '/goods', 'error', 'нет данных от API');
+    await sendMessage(chatId, '❌ Не удалось получить список товаров');
+    return;
+  }
+
+  // Фильтруем только товары из мониторинга
+  const monitoringProducts = data.products.filter(p => monitoringCodes.includes(p.code));
+
+  if (!monitoringProducts.length) {
+    logCommand(userId, '/goods', 'warning', 'нет товаров в мониторинге');
+    await sendMessage(chatId, '📭 В вашем мониторинге нет товаров');
+    return;
+  }
+
+  logCommand(userId, '/goods', 'success', `найдено товаров:${monitoringProducts.length}`);
+  await sendMessage(chatId, `📦 В вашем мониторинге: ${monitoringProducts.length} товаров. Отправляю список...`);
+
+  const batchSize = 50;
+  let sentCount = 0;
+  
+  for (let i = 0; i < monitoringProducts.length; i += batchSize) {
+    const batch = monitoringProducts.slice(i, i + batchSize);
+    const list = batch.map(p => `• ${p.name}`).join('\n');
+    const header = `📋 Часть ${Math.floor(i/batchSize) + 1}/${Math.ceil(monitoringProducts.length/batchSize)}:\n\n`;
+    
+    await sendMessage(chatId, header + list);
+    sentCount += batch.length;
+    
+    logCommand(userId, '/goods', 'success', `отправлена часть ${Math.floor(i/batchSize) + 1}: ${batch.length} товаров`);
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  
+  logCommand(userId, '/goods', 'success', `всего отправлено:${sentCount} товаров из мониторинга`);
+  return;
+}
 
   // === /CHANGES - ОБНОВЛЕННАЯ ВЕРСИЯ ===
   if (text === '/changes') {
