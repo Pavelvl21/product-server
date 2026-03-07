@@ -1070,6 +1070,9 @@ app.get('/api/filter-stats', authenticateToken, async (req, res) => {
 });
 
 // ==================== ПОЛУЧЕНИЕ ДОСТУПНЫХ БРЕНДОВ ПО КАТЕГОРИЯМ ====================
+// server.js - добавь или обнови этот эндпоинт
+
+// ==================== ПОЛУЧЕНИЕ ДОСТУПНЫХ ОПЦИЙ ФИЛЬТРОВ ====================
 app.get('/api/filter-options', authenticateToken, async (req, res) => {
   try {
     const categories = req.query.categories ? 
@@ -1077,14 +1080,12 @@ app.get('/api/filter-options', authenticateToken, async (req, res) => {
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     
-    let response = {
-      availableCategories: [],
-      availableBrands: [],
+    const response = {
       categoryCounts: {},
       brandCounts: {}
     };
 
-    // Если выбраны бренды, получаем доступные категории
+    // Если выбраны бренды, получаем доступные категории с количеством
     if (brands.length > 0) {
       const brandPlaceholders = brands.map(() => '?').join(',');
       const categoriesResult = await db.execute({
@@ -1099,13 +1100,12 @@ app.get('/api/filter-options', authenticateToken, async (req, res) => {
         args: brands
       });
       
-      response.availableCategories = categoriesResult.rows.map(r => r.category);
       categoriesResult.rows.forEach(row => {
         response.categoryCounts[row.category] = row.count;
       });
     }
 
-    // Если выбраны категории, получаем доступные бренды
+    // Если выбраны категории, получаем доступные бренды с количеством
     if (categories.length > 0) {
       const categoryPlaceholders = categories.map(() => '?').join(',');
       const brandsResult = await db.execute({
@@ -1120,49 +1120,19 @@ app.get('/api/filter-options', authenticateToken, async (req, res) => {
         args: categories
       });
       
-      response.availableBrands = brandsResult.rows.map(r => r.brand);
       brandsResult.rows.forEach(row => {
         response.brandCounts[row.brand] = row.count;
       });
     }
 
-    // Если ничего не выбрано, возвращаем все категории и бренды
-    if (categories.length === 0 && brands.length === 0) {
-      const allCategories = await db.execute(`
-        SELECT category, COUNT(*) as count 
-        FROM products_info 
-        WHERE category IS NOT NULL AND category != ''
-        GROUP BY category
-        ORDER BY category
-      `);
-      
-      const allBrands = await db.execute(`
-        SELECT brand, COUNT(*) as count 
-        FROM products_info 
-        WHERE brand IS NOT NULL AND brand != ''
-        GROUP BY brand
-        ORDER BY brand
-      `);
-      
-      response.availableCategories = allCategories.rows.map(r => r.category);
-      response.availableBrands = allBrands.rows.map(r => r.brand);
-      
-      allCategories.rows.forEach(row => {
-        response.categoryCounts[row.category] = row.count;
-      });
-      
-      allBrands.rows.forEach(row => {
-        response.brandCounts[row.brand] = row.count;
-      });
-    }
-
+    // Если ничего не выбрано, возвращаем пустые объекты (фронт сам покажет все)
     res.json(response);
     
   } catch (err) {
     console.error('Ошибка получения опций фильтров:', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
-});
+});;
 
 setupBotEndpoints(app, authenticateToken);
 
