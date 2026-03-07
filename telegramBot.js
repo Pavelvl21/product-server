@@ -1,3 +1,4 @@
+// telegramBot.js
 import fetch from 'node-fetch';
 import db from './database.js';
 import {
@@ -229,6 +230,32 @@ async function lockUserSelection(telegramId) {
   }
 }
 
+// ==================== НОВАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ТОВАРОВ ИЗ МОНИТОРИНГА ====================
+async function getUserMonitoringProducts(telegramId) {
+  try {
+    // Получаем пользователя по telegram_id, чтобы узнать его user_id в системе
+    const userResult = await db.execute({
+      sql: 'SELECT id FROM users WHERE telegram_id = ?',
+      args: [telegramId]
+    });
+    
+    if (userResult.rows.length === 0) return [];
+    
+    const userId = userResult.rows[0].id;
+    
+    // Получаем товары из мониторинга этого пользователя
+    const monitoringResult = await db.execute({
+      sql: 'SELECT product_code FROM user_shelf WHERE user_id = ?',
+      args: [userId]
+    });
+    
+    return monitoringResult.rows.map(row => row.product_code);
+  } catch (err) {
+    console.error('Ошибка получения мониторинга:', err);
+    return [];
+  }
+}
+
 // ==================== ПОЛУЧЕНИЕ КАТЕГОРИЙ ====================
 
 async function getCategoriesFromServer() {
@@ -317,7 +344,7 @@ async function getPriceChanges() {
   // Сортируем
   changes.sort((a, b) => {
     if (!a.isDecrease && !b.isDecrease) return b.change - a.change;
-    if (a.isDecrease && b.isDecrease) return b.change - a.change;
+    if (a.isDecrease && b.isDecrease) return a.change - b.change;
     return a.isDecrease ? 1 : -1;
   });
 
@@ -703,30 +730,34 @@ async function handleMessage(message) {
     return;
   }
 
-  // === /CHANGES ===
+  // === /CHANGES - ОБНОВЛЕННАЯ ВЕРСИЯ ===
   if (text === '/changes') {
     logCommand(userId, '/changes', 'start');
     
     if (!checkRateLimit(userId, '/changes')) return;
 
-    const categories = user.selected_categories || [];
-    if (!categories.length) {
-      logCommand(userId, '/changes', 'error', 'нет категорий');
-      await sendMessage(chatId, '❌ Категории не выбраны');
+    // Получаем товары из мониторинга пользователя
+    const monitoringCodes = await getUserMonitoringProducts(userId);
+    
+    if (monitoringCodes.length === 0) {
+      logCommand(userId, '/changes', 'warning', 'нет товаров в мониторинге');
+      await sendMessage(chatId, '📭 У вас нет товаров в мониторинге');
       return;
     }
 
     const allChanges = await getPriceChanges();
-    const changes = allChanges.filter(c => categories.includes(c.category));
+    
+    // Фильтруем изменения только по товарам из мониторинга
+    const changes = allChanges.filter(c => monitoringCodes.includes(c.product_code));
 
     if (!changes.length) {
-      logCommand(userId, '/changes', 'warning', 'нет изменений');
-      await sendMessage(chatId, '📭 Сегодня нет изменений в выбранных категориях');
+      logCommand(userId, '/changes', 'warning', 'нет изменений в мониторинге');
+      await sendMessage(chatId, '📭 Сегодня нет изменений по вашим товарам');
       return;
     }
 
     logCommand(userId, '/changes', 'success', `найдено изменений:${changes.length}`);
-    await sendMessage(chatId, `📊 Найдено изменений: ${changes.length}`);
+    await sendMessage(chatId, `📊 Найдено изменений в мониторинге: ${changes.length}`);
 
     for (let i = 0; i < changes.length; i++) {
       const ch = changes[i];
@@ -756,8 +787,8 @@ async function handleMessage(message) {
       '/help - это сообщение',
       '/start - начало работы',
       '/status - статус и категории',
-      '/changes - изменения цен за сегодня',
-      '/goods - список товаров',
+      '/changes - изменения цен за сегодня (только по вашему мониторингу)',
+      '/goods - список товаров по категориям',
       '',
       'ℹ️ Категории выбираются один раз при регистрации.'
     ];
