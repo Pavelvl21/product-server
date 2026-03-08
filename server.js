@@ -49,15 +49,15 @@ app.use(helmet({
 }));
 
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 500000,
-  max: 1000,
+  windowMs: 15 * 60 * 1000,
+  max: 10000,
   message: { error: 'Слишком много запросов, попробуйте позже' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 const authLimiter = rateLimit({
-  windowMs: 60 * 60 * 50000,
+  windowMs: 60 * 60 * 1000,
   max: 15,
   message: { error: 'Слишком много попыток входа, попробуйте через час' },
   skipSuccessfulRequests: true,
