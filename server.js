@@ -792,6 +792,39 @@ app.post('/api/products/add-full', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
+// ==================== ПРОВЕРКА СТАТУСА НЕСКОЛЬКИХ ТОВАРОВ ====================
+app.post('/api/user/shelf/status', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { codes } = req.body;
+    
+    if (!Array.isArray(codes) || codes.length === 0) {
+      return res.status(400).json({ error: 'Необходимо передать массив кодов' });
+    }
+    
+    const placeholders = codes.map(() => '?').join(',');
+    const result = await db.execute({
+      sql: `
+        SELECT product_code 
+        FROM user_shelf 
+        WHERE user_id = ? AND product_code IN (${placeholders})
+      `,
+      args: [userId, ...codes]
+    });
+    
+    const shelfCodes = new Set(result.rows.map(r => r.product_code));
+    const status = {};
+    codes.forEach(code => {
+      status[code] = shelfCodes.has(code);
+    });
+    
+    res.json(status);
+    
+  } catch (err) {
+    console.error('Ошибка проверки статуса:', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
 
 // ==================== ПОЛЬЗОВАТЕЛЬСКИЕ ЭНДПОИНТЫ ====================
 
