@@ -1158,6 +1158,70 @@ app.delete('/api/user/shelf/:code', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== ПРОВЕРКА НАЛИЧИЯ ТОВАРА В БД ПО КОДУ ====================
+app.get('/api/products/check/:code', authenticateToken, async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    console.log(`🔍 Проверка наличия товара ${code} в БД`);
+
+    // Ищем товар в products_info
+    const product = await db.execute({
+      sql: 'SELECT * FROM products_info WHERE code = ?',
+      args: [code]
+    });
+
+    if (product.rows.length === 0) {
+      return res.json({ 
+        exists: false,
+        message: 'Товар не найден в базе данных'
+      });
+    }
+
+    // Получаем историю цен для этого товара
+    const history = await db.execute({
+      sql: `
+        SELECT price, updated_at
+        FROM price_history
+        WHERE product_code = ?
+        ORDER BY updated_at ASC
+      `,
+      args: [code]
+    });
+
+    // Формируем ответ в том же формате, что и /api/products/paginated
+    const productData = {
+      code: product.rows[0].code,
+      name: product.rows[0].name,
+      link: product.rows[0].link,
+      category: product.rows[0].category || 'Товары',
+      brand: product.rows[0].brand || 'Без бренда',
+      base_price: product.rows[0].base_price,
+      packPrice: product.rows[0].packPrice,
+      monthly_payment: product.rows[0].monthly_payment,
+      no_overpayment_max_months: product.rows[0].no_overpayment_max_months,
+      currentPrice: product.rows[0].last_price,
+      lastUpdate: product.rows[0].last_update,
+      priceHistory: history.rows.map(row => ({
+        date: row.updated_at,
+        price: row.price
+      }))
+    };
+
+    res.json({
+      exists: true,
+      product: productData
+    });
+
+  } catch (err) {
+    console.error('❌ Ошибка проверки товара:', err);
+    res.status(500).json({ 
+      error: 'Внутренняя ошибка сервера',
+      details: err.message 
+    });
+  }
+});
+
 // ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ ПОЛКИ С МУЛЬТИФИЛЬТРАМИ ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
