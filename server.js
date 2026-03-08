@@ -49,7 +49,7 @@ app.use(helmet({
 }));
 
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 50000,
+  windowMs: 15 * 60 * 500000,
   max: 1000,
   message: { error: 'Слишком много запросов, попробуйте позже' },
   standardHeaders: true,
