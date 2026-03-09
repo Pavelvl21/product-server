@@ -715,31 +715,31 @@ app.post('/api/products/add-full', authenticateToken, async (req, res) => {
     console.log(`📦 Добавление товара ${code} с полными данными`);
 
     // Проверяем, есть ли уже такой товар
-    const existing = await db.execute({
+    const existing = await db.get({
       sql: 'SELECT code FROM product_codes WHERE code = ?',
       args: [code]
     });
 
-    if (existing.rows.length > 0) {
+    if (existing) {
       return res.status(400).json({ error: 'Товар уже существует в базе' });
     }
 
     // Проверяем лимит
-    const count = await db.execute('SELECT COUNT(*) as c FROM product_codes');
-    if (count.rows[0].c >= 5000) {
+    const count = await db.get('SELECT COUNT(*) as count FROM product_codes');
+    if (count.count >= 5000) {
       return res.status(400).json({ error: 'Лимит 5000 товаров' });
     }
 
     // Добавляем код в product_codes
-    await db.execute({
+    await db.run({
       sql: 'INSERT INTO product_codes (code) VALUES (?)',
       args: [code]
     });
 
     // Сохраняем информацию о товаре
-    const now = new Date();
+    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
     
-    await db.execute({
+    await db.run({
       sql: `
         INSERT INTO products_info (
           code, name, last_price, base_price, packPrice,
@@ -770,15 +770,18 @@ app.post('/api/products/add-full', authenticateToken, async (req, res) => {
         link || '', 
         category, 
         brand, 
-        now.toISOString().slice(0, 19).replace('T', ' ')
+        now
       ]
     });
 
     // Создаем первую запись в истории цен
-    await db.execute({
+    await db.run({
       sql: 'INSERT INTO price_history (product_code, product_name, price, updated_at) VALUES (?, ?, ?, ?)',
-      args: [code, name, price, now.toISOString().slice(0, 19).replace('T', ' ')]
+      args: [code, name, price, now]
     });
+
+    // ========== ОБНОВЛЯЕМ СВЯЗИ КАТЕГОРИЯ-БРЕНД ==========
+    await updateCategoryBrandRelations(category, brand);
 
     console.log(`✅ Товар ${code} успешно добавлен с полными данными`);
     res.json({ 
