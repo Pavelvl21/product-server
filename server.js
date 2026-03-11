@@ -1470,7 +1470,32 @@ app.get('/api/filter-stats', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
+// Поиск товара
+const handleSearch = async () => {
+  // ...
+  const searchRes = await api.post('/api/search-product', { code: cleanCode });
+  // ...
+}
 
+// Добавление в каталог
+const handleAddToCatalog = async () => {
+  // ...
+  const productData = {
+    code: currentProduct.code,
+    name: currentProduct.name,
+    price: currentProduct.currentPrice,
+    base_price: currentProduct.base_price,
+    packPrice: currentProduct.packPrice,
+    category: currentProduct.category,
+    brand: currentProduct.brand,
+    monthly_payment: currentProduct.monthly_payment,
+    no_overpayment_max_months: currentProduct.no_overpayment_max_months,
+    link: currentProduct.link
+  };
+  
+  await api.post('/api/products/add-full', productData);
+  // ...
+}
 
 // ==================== ПОЛУЧЕНИЕ ОПЦИЙ ФИЛЬТРОВ ====================
 app.get('/api/filter-options', authenticateToken, async (req, res) => {
