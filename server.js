@@ -1474,26 +1474,34 @@ app.get('/api/filter-stats', authenticateToken, async (req, res) => {
 
 // ==================== ПОИСК ПО API 21VEK ====================
 app.get('/api/external/search', authenticateToken, async (req, res) => {
+  console.log('=== НАЧАЛО ЗАПРОСА /api/external/search ===');
+  
   try {
     const { query } = req.query;
-    
+    console.log('1. Получен query параметр:', query);
+
     if (!query || query.trim() === '') {
+      console.log('2. ОШИБКА: query пустой');
       return res.status(400).json({ error: 'Поисковый запрос обязателен' });
     }
 
-    console.log(`🔍 Внешний поиск по запросу: "${query}"`);
+    console.log('3. Пользователь авторизован, id:', req.user?.id);
 
-    // Добавляем заголовки как в браузере
-    const response = await fetch(
-      `https://gate.21vek.by/search-composer/api/v1/search/suggest?query=${encodeURIComponent(query)}&mode=desktop`,
-      {
-        headers: {
-          "accept": "application/json",
-          "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+    // Формируем URL для запроса к 21vek
+    const searchUrl = `https://gate.21vek.by/search-composer/api/v1/search/suggest?query=${encodeURIComponent(query)}&mode=desktop`;
+    console.log('4. URL для запроса к 21vek:', searchUrl);
+
+    // Делаем запрос к API 21vek
+    console.log('5. Отправка запроса к 21vek...');
+    const response = await fetch(searchUrl, {
+      headers: {
+        "accept": "application/json",
+        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
       }
-    );
+    });
+
+    console.log('6. Статус ответа от 21vek:', response.status);
 
     if (!response.ok) {
       console.error(`❌ Ошибка ответа от 21vek: ${response.status}`);
@@ -1503,25 +1511,30 @@ app.get('/api/external/search', authenticateToken, async (req, res) => {
       });
     }
 
+    // Получаем данные
+    console.log('7. Чтение ответа от 21vek...');
     const data = await response.json();
-    
-    // Извлекаем товары из ответа
+    console.log('8. Получены данные от 21vek, структура:', Object.keys(data));
+
+    // Извлекаем товары
+    console.log('9. Поиск секции products в ответе...');
     const products = [];
-    
-    // Ищем секцию с товарами
     const productsGroup = data.data?.find(group => group.group_type === 'products');
     
+    console.log('10. Найдена группа products:', !!productsGroup);
+    
     if (productsGroup && productsGroup.items) {
+      console.log(`11. Количество товаров в группе: ${productsGroup.items.length}`);
+      
       for (const item of productsGroup.items) {
-        // Проверяем, есть ли уже такой товар в нашей БД
+        console.log('12. Обработка товара:', item.product_id);
+        
         const cleanCode = item.product_id?.replace(/\./g, '') || '';
-        
         if (!cleanCode) continue;
-        
+
         // Парсим цену
         let price = null;
-        if (item.price) {
-          // Убираем пробелы и заменяем запятую на точку
+        if (item.price && item.price !== 'нет на складе') {
           const priceStr = item.price.replace(/\s/g, '').replace(',', '.');
           price = parseFloat(priceStr);
         }
@@ -1535,8 +1548,7 @@ app.get('/api/external/search', authenticateToken, async (req, res) => {
           });
           exists = !!existing;
         } catch (dbErr) {
-          console.error('Ошибка проверки БД:', dbErr);
-          // Продолжаем даже если ошибка БД
+          console.error('13. Ошибка проверки БД:', dbErr);
         }
 
         products.push({
@@ -1553,17 +1565,25 @@ app.get('/api/external/search', authenticateToken, async (req, res) => {
       }
     }
 
-    console.log(`✅ Найдено ${products.length} товаров на 21vek`);
+    console.log(`✅ Успешно обработано ${products.length} товаров`);
+    console.log('=== КОНЕЦ ЗАПРОСА ===');
+    
     res.json({ 
       query,
       products 
     });
 
   } catch (err) {
-    console.error('❌ Ошибка внешнего поиска:', err);
+    console.error('❌ КРИТИЧЕСКАЯ ОШИБКА ВНЕШНЕГО ПОИСКА:');
+    console.error('Имя ошибки:', err.name);
+    console.error('Сообщение:', err.message);
+    console.error('Стек:', err.stack);
+    console.log('=== КОНЕЦ ЗАПРОСА С ОШИБКОЙ ===');
+    
     res.status(500).json({ 
       error: 'Внутренняя ошибка сервера',
-      details: err.message 
+      details: err.message,
+      name: err.name
     });
   }
 });
