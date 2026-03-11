@@ -1483,47 +1483,77 @@ app.get('/api/external/search', authenticateToken, async (req, res) => {
 
     console.log(`🔍 Внешний поиск по запросу: "${query}"`);
 
+    // Добавляем заголовки как в браузере
     const response = await fetch(
       `https://gate.21vek.by/search-composer/api/v1/search/suggest?query=${encodeURIComponent(query)}&mode=desktop`,
       {
         headers: {
           "accept": "application/json",
-          "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+          "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
       }
     );
 
     if (!response.ok) {
-      return res.status(502).json({ error: 'Ошибка при обращении к внешнему API' });
+      console.error(`❌ Ошибка ответа от 21vek: ${response.status}`);
+      return res.status(502).json({ 
+        error: 'Ошибка при обращении к внешнему API',
+        status: response.status 
+      });
     }
 
     const data = await response.json();
     
     // Извлекаем товары из ответа
     const products = [];
+    
+    // Ищем секцию с товарами
     const productsGroup = data.data?.find(group => group.group_type === 'products');
     
     if (productsGroup && productsGroup.items) {
       for (const item of productsGroup.items) {
         // Проверяем, есть ли уже такой товар в нашей БД
-        const cleanCode = item.product_id.replace(/\./g, '');
-        const existing = await db.get({
-          sql: 'SELECT code FROM products_info WHERE code = ?',
-          args: [cleanCode]
-        });
+        const cleanCode = item.product_id?.replace(/\./g, '') || '';
+        
+        if (!cleanCode) continue;
+        
+        // Парсим цену
+        let price = null;
+        if (item.price) {
+          // Убираем пробелы и заменяем запятую на точку
+          const priceStr = item.price.replace(/\s/g, '').replace(',', '.');
+          price = parseFloat(priceStr);
+        }
+
+        // Проверяем существование в БД
+        let exists = false;
+        try {
+          const existing = await db.get({
+            sql: 'SELECT code FROM products_info WHERE code = ?',
+            args: [cleanCode]
+          });
+          exists = !!existing;
+        } catch (dbErr) {
+          console.error('Ошибка проверки БД:', dbErr);
+          // Продолжаем даже если ошибка БД
+        }
 
         products.push({
           code: cleanCode,
           originalCode: item.product_id,
-          name: item.name,
-          price: parseFloat(item.price?.replace(/\s/g, '').replace(',', '.') || 0),
-          url: item.url,
-          image: item.image,
-          exists: !!existing
+          name: item.name || 'Без названия',
+          price: price || 0,
+          currentPrice: price || 0,
+          url: item.url || null,
+          image: item.image || null,
+          exists: exists,
+          fromExternal: true
         });
       }
     }
 
+    console.log(`✅ Найдено ${products.length} товаров на 21vek`);
     res.json({ 
       query,
       products 
@@ -1531,10 +1561,12 @@ app.get('/api/external/search', authenticateToken, async (req, res) => {
 
   } catch (err) {
     console.error('❌ Ошибка внешнего поиска:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    res.status(500).json({ 
+      error: 'Внутренняя ошибка сервера',
+      details: err.message 
+    });
   }
 });
-
 // ==================== ПОЛУЧЕНИЕ ОПЦИЙ ФИЛЬТРОВ ====================
 app.get('/api/filter-options', authenticateToken, async (req, res) => {
   try {
