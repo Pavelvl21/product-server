@@ -255,30 +255,71 @@ export function formatSubscriberStats(stats) {
 
 // ==================== УВЕДОМЛЕНИЯ ОБ ИЗМЕНЕНИЯХ ЦЕН ====================
 
-export async function notifyPriceChange(product, oldPrice, newPrice, formatFunction) {
-  // Получаем категорию товара
-  const category = product.category;
-  if (!category) return 0;
-  
-  // Находим пользователей, подписанных на эту категорию
-  const users = await getUsersByCategories([category]);
-  if (users.length === 0) return 0;
-  
-  // Форматируем сообщение
-  const message = formatFunction(product, oldPrice, newPrice);
-  
-  console.log(`💰 Уведомляем ${users.length} пользователей об изменении цены ${product.code} в категории "${category}"`);
-  
-  let sentCount = 0;
-  for (const user of users) {
-    try {
-      await sendMessage(user.chat_id, message);
-      sentCount++;
-      await new Promise(resolve => setTimeout(resolve, 35));
-    } catch (err) {
-      console.error(`❌ Ошибка уведомления пользователя ${user.telegram_id}:`, err);
+export async function notifyProductSubscribers(productCode, productData, oldPrice, newPrice, formatFunction) {
+  console.log(`🔔 [notifyProductSubscribers] Поиск подписчиков для товара ${productCode}`);
+
+  try {
+    // 1. Находим всех пользователей, у которых этот товар в мониторинге
+    const subscribers = await db.execute({
+      sql: `SELECT user_id FROM user_shelf WHERE product_code = ?`,
+      args: [productCode]
+    });
+
+    if (subscribers.rows.length === 0) {
+      console.log(`   👤 Нет пользователей, отслеживающих этот товар.`);
+      return 0;
     }
+
+    console.log(`   👤 Найдено подписчиков: ${subscribers.rows.length}`);
+
+    // 2. Для каждого подписчика получаем telegram_id и chat_id
+    let sentCount = 0;
+    for (const sub of subscribers.rows) {
+      const userId = sub.user_id;
+
+      // Ищем telegram_id пользователя в таблице users
+      const userInfo = await db.execute({
+        sql: `SELECT telegram_id FROM users WHERE id = ?`,
+        args: [userId]
+      });
+
+      if (userInfo.rows.length === 0 || !userInfo.rows[0].telegram_id) {
+        console.log(`   ⚠️ У пользователя ${userId} не привязан Telegram или он не найден. Пропускаем.`);
+        continue;
+      }
+
+      const telegramId = userInfo.rows[0].telegram_id;
+
+      // Ищем chat_id пользователя в таблице telegram_users
+      const telegramUser = await db.execute({
+        sql: `SELECT chat_id FROM telegram_users WHERE telegram_id = ?`,
+        args: [telegramId]
+      });
+
+      if (telegramUser.rows.length === 0 || !telegramUser.rows[0].chat_id) {
+        console.log(`   ⚠️ Для telegram_id ${telegramId} не найден chat_id. Пропускаем.`);
+        continue;
+      }
+
+      const chatId = telegramUser.rows[0].chat_id;
+
+      // 3. Форматируем и отправляем сообщение
+      const message = formatFunction(productData, oldPrice, newPrice);
+      const sent = await sendMessage(chatId, message);
+      
+      if (sent && sent.ok) {
+        sentCount++;
+      }
+      
+      // Задержка между отправками, чтобы не спамить
+      await new Promise(resolve => setTimeout(resolve, 35));
+    }
+
+    console.log(`✅ Уведомление отправлено ${sentCount} подписчикам.`);
+    return sentCount;
+
+  } catch (err) {
+    console.error(`❌ Ошибка в notifyProductSubscribers для товара ${productCode}:`, err);
+    return 0;
   }
-  
-  return sentCount;
 }
