@@ -812,7 +812,7 @@ app.post('/api/products/add-full', authenticateToken, async (req, res) => {
     });
 
     // ========== ОБНОВЛЯЕМ СВЯЗИ КАТЕГОРИЯ-БРЕНД ==========
-    await updateCategoryBrandRelations(category, brand);
+    // await updateCategoryBrandRelations(category, brand);
 
     console.log(`✅ Товар ${code} успешно добавлен с полными данными`);
     res.json({ 
@@ -1762,6 +1762,7 @@ app.get('/api/external/search', authenticateToken, async (req, res) => {
   }
 });
 // ==================== ПОЛУЧЕНИЕ ОПЦИЙ ФИЛЬТРОВ ====================
+// Это в server.js
 app.get('/api/filter-options', authenticateToken, async (req, res) => {
   try {
     const categories = req.query.categories ? 
