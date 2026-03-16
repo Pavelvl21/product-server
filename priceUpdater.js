@@ -1,4 +1,4 @@
-import db from './database.js';
+import db, { updateCategoryBrandRelations } from './database.js';
 import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
 import { notifyProductSubscribers } from './telegramBroadcast.js';
 
