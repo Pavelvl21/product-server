@@ -1,5 +1,5 @@
 import db from './database.js';
-import { updateCategoryBrandRelations } from './database.js';
+import { updateCategoryBrandRelations } from './categoryRelations.js'; // ← новый импорт
 import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
 import { notifyProductSubscribers } from './telegramBroadcast.js';
 
@@ -219,10 +219,10 @@ export async function updateAllPrices() {
   // 📊 СЧЁТЧИКИ ДЛЯ ДИАГНОСТИКИ
   let totalProcessed = 0;
   let totalErrors = 0;
-  let totalPriceChanges = 0; // сколько раз цена реально изменилась
-  let totalPriceInserts = 0; // сколько INSERT в price_history сделано
-  let totalProductUpdates = 0; // сколько UPDATE products_info
-  let totalCategoryUpdates = 0; // сколько операций с category_brand_relations
+  let totalPriceChanges = 0;
+  let totalPriceInserts = 0;
+  let totalProductUpdates = 0;
+  let totalCategoryUpdates = 0;
 
   try {
     const codesResult = await db.execute('SELECT code FROM product_codes');
@@ -259,7 +259,6 @@ export async function updateAllPrices() {
         try {
           batchProcessed++;
           
-          // Получаем данные с 21vek
           const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
             headers: {
               "accept": "application/json",
@@ -286,7 +285,6 @@ export async function updateAllPrices() {
             continue;
           }
           
-          // Получаем данные рассрочки
           try {
             const partlyPayResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
               method: "POST",
@@ -315,16 +313,13 @@ export async function updateAllPrices() {
             // Игнорируем ошибки рассрочки
           }
           
-          // 📊 Сохраняем и собираем статистику
           const stats = await saveProductData(product, batchStartTime);
           
-          // Собираем статистику
           batchPriceChanges += stats.priceChanged ? 1 : 0;
           batchPriceInserts += stats.priceInserted ? 1 : 0;
           batchProductUpdates += stats.productUpdated ? 1 : 0;
           batchCategoryUpdates += stats.categoryUpdated ? 1 : 0;
           
-          // Умная задержка
           await new Promise(resolve => setTimeout(resolve, requestDelay));
           
           if (requestDelay > 100) {
@@ -356,7 +351,6 @@ export async function updateAllPrices() {
       };
     };
 
-    // Запускаем батчи параллельно
     for (let i = 0; i < batches.length; i += CONCURRENT_LIMIT) {
       const currentBatches = batches.slice(i, i + CONCURRENT_LIMIT);
       
@@ -402,7 +396,7 @@ ${error.message}
 
 export async function cleanOldRecords() {
   try {
-    const result = await db.execute({
+    await db.execute({
       sql: "DELETE FROM price_history WHERE updated_at < datetime('now', '-90 days')",
       args: []
     });
