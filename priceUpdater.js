@@ -1,7 +1,9 @@
 import db from './database.js';
-import { updateCategoryBrandRelations } from './categoryRelations.js'; // ← новый импорт
+import { updateCategoryBrandRelations } from './categoryRelations.js';
 import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
 import { notifyProductSubscribers } from './telegramBroadcast.js';
+
+// ... остальной код
 
 async function insertPriceRecord(code, name, price, timestamp) {
   await db.execute({
