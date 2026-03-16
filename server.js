@@ -972,48 +972,76 @@ app.post('/api/user/change-password', authenticateToken, async (req, res) => {
 // ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ МАТРИЦЫ+ С МУЛЬТИФИЛЬТРАМИ ====================
 app.get('/api/products/paginated', authenticateToken, async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 16;
+    const userId = req.user.id; // получаем ID пользователя из токена
+    const limit = parseInt(req.query.limit) || 24;
     const offset = parseInt(req.query.offset) || 0;
     const categories = req.query.categories ? 
       (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
-    
-    console.log(`📊 Запрос пагинации матрицы: limit=${limit}, offset=${offset}, categories=${categories}, brands=${brands}, search=${search}`);
 
-    // Строим WHERE условие
+    console.log(`📊 Запрос пагинации: userId=${userId}, limit=${limit}, offset=${offset}, categories=${categories}, brands=${brands}, search=${search}`);
+
+    // Строим WHERE условие с параметрами
     let whereConditions = [];
-    
+    let queryParams = [];
+
+    // Добавляем userId в параметры не нужно для WHERE, он используется в JOIN
+
     if (categories.length > 0) {
-      const cats = categories.map(c => `'${c}'`).join(',');
-      whereConditions.push(`category IN (${cats})`);
+      const placeholders = categories.map(() => '?').join(',');
+      whereConditions.push(`p.category IN (${placeholders})`);
+      queryParams.push(...categories);
     }
     if (brands.length > 0) {
-      const brds = brands.map(b => `'${b}'`).join(',');
-      whereConditions.push(`brand IN (${brds})`);
+      const placeholders = brands.map(() => '?').join(',');
+      whereConditions.push(`p.brand IN (${placeholders})`);
+      queryParams.push(...brands);
     }
-if (search && search !== '') {
-  const searchLower = search.toLowerCase();
-  whereConditions.push(`(name_lower LIKE '%${searchLower}%' OR code LIKE '%${search}%')`);
-}
-    
+    if (search && search !== '') {
+      const searchLower = search.toLowerCase();
+      whereConditions.push(`(p.name_lower LIKE ? OR p.code LIKE ?)`);
+      queryParams.push(`%${searchLower}%`, `%${search}%`);
+    }
+
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
 
-    // Получаем товары с пагинацией
-    const products = await db.execute(`
-      SELECT * FROM products_info 
+    // ОСНОВНОЙ ЗАПРОС с LEFT JOIN для получения флага inMonitoring
+    const productsQuery = `
+      SELECT 
+        p.*,
+        CASE WHEN us.user_id IS NOT NULL THEN 1 ELSE 0 END as inMonitoring
+      FROM products_info p
+      LEFT JOIN user_shelf us ON p.code = us.product_code AND us.user_id = ?
       ${whereClause}
-      ORDER BY last_update DESC 
-      LIMIT ${limit} OFFSET ${offset}
-    `);
+      ORDER BY p.last_update DESC 
+      LIMIT ? OFFSET ?
+    `;
+
+    // Для запроса товаров: userId, затем все параметры фильтров, затем limit и offset
+    const productsParams = [userId, ...queryParams, limit, offset];
     
-    // Получаем общее количество
-    const totalCount = await db.execute(`
-      SELECT COUNT(*) as count FROM products_info 
-      ${whereClause}
-    `);
-    
+    const products = await db.execute({
+      sql: productsQuery,
+      args: productsParams
+    });
+
+    // Запрос для общего количества (без JOIN, только фильтры)
+    let countQuery = `SELECT COUNT(*) as count FROM products_info p`;
+    let countParams = [];
+
+    if (whereConditions.length > 0) {
+      countQuery += ' WHERE ' + whereConditions.join(' AND ');
+      countParams = queryParams; // те же параметры, что и для фильтров
+    }
+
+    const totalCount = await db.execute({
+      sql: countQuery,
+      args: countParams
+    });
+
+    // Если товаров нет, возвращаем пустой результат
     if (products.rows.length === 0) {
       return res.json({
         products: [],
@@ -1022,10 +1050,8 @@ if (search && search !== '') {
       });
     }
 
-    // Получаем коды товаров для запроса истории
-    const codes = products.rows.map(p => `'${p.code}'`).join(',');
-    
     // Получаем историю цен для этих товаров
+    const codes = products.rows.map(p => `'${p.code}'`).join(',');
     const history = await db.execute(`
       SELECT product_code, price, updated_at
       FROM price_history
@@ -1058,7 +1084,8 @@ if (search && search !== '') {
       no_overpayment_max_months: p.no_overpayment_max_months,
       currentPrice: p.last_price,
       lastUpdate: p.last_update,
-      priceHistory: historyByProduct[p.code] || []
+      priceHistory: historyByProduct[p.code] || [],
+      inMonitoring: p.inMonitoring === 1 // преобразуем в boolean
     }));
 
     res.json({
