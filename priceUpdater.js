@@ -142,8 +142,8 @@ async function saveProductData(product, timestamp) {
     stats.productUpdated = true;
 
     // Обновляем связи категорий
-    await updateCategoryBrandRelations(category, brand);
-    stats.categoryUpdated = true;
+    // await updateCategoryBrandRelations(category, brand);
+    // stats.categoryUpdated = true;
 
     return stats;
 
