@@ -1924,3 +1924,319 @@ process.on('unhandledRejection', (err) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
 });
+// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ С СОРТИРОВКОЙ ====================
+app.get('/api/products/paginated', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 24;
+    const offset = parseInt(req.query.offset) || 0;
+    const categories = req.query.categories ? 
+      (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
+    const brands = req.query.brands ? 
+      (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
+    const search = req.query.search;
+    const sort = req.query.sort || 'price_desc'; // параметр сортировки
+
+    console.log(`📊 Запрос пагинации: userId=${userId}, sort=${sort}`);
+
+    // Определяем поле и порядок сортировки
+    let orderClause = '';
+    switch (sort) {
+      case 'price_asc':
+        orderClause = 'ORDER BY p.last_price ASC, p.code';
+        break;
+      case 'price_desc':
+        orderClause = 'ORDER BY p.last_price DESC, p.code';
+        break;
+      case 'change_asc':
+        // Сложная сортировка по изменению цены
+        orderClause = `
+          ORDER BY COALESCE(
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1), 0
+          ) - COALESCE(
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1 OFFSET 1), 
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1)
+          ) ASC, p.code
+        `;
+        break;
+      case 'change_desc':
+        orderClause = `
+          ORDER BY COALESCE(
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1), 0
+          ) - COALESCE(
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1 OFFSET 1), 
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1)
+          ) DESC, p.code
+        `;
+        break;
+      case 'favorite':
+        // Для каталога: сначала избранные, потом остальные
+        orderClause = `
+          ORDER BY 
+            CASE WHEN us.user_id IS NOT NULL THEN 0 ELSE 1 END,
+            p.last_price DESC,
+            p.code
+        `;
+        break;
+      default:
+        orderClause = 'ORDER BY p.last_price DESC, p.code';
+    }
+
+    // Строим WHERE условие
+    let whereConditions = [];
+    let queryParams = [userId];
+
+    if (categories.length > 0) {
+      const placeholders = categories.map(() => '?').join(',');
+      whereConditions.push(`p.category IN (${placeholders})`);
+      queryParams.push(...categories);
+    }
+    if (brands.length > 0) {
+      const placeholders = brands.map(() => '?').join(',');
+      whereConditions.push(`p.brand IN (${placeholders})`);
+      queryParams.push(...brands);
+    }
+    if (search && search !== '') {
+      const searchLower = search.toLowerCase();
+      whereConditions.push(`(p.name_lower LIKE ? OR p.code LIKE ?)`);
+      queryParams.push(`%${searchLower}%`, `%${search}%`);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    // Основной запрос
+    const productsQuery = `
+      SELECT 
+        p.*,
+        CASE WHEN us.user_id IS NOT NULL THEN 1 ELSE 0 END as inMonitoring
+      FROM products_info p
+      LEFT JOIN user_shelf us ON p.code = us.product_code AND us.user_id = ?
+      ${whereClause}
+      ${orderClause}
+      LIMIT ? OFFSET ?
+    `;
+
+    const productsParams = [...queryParams, limit, offset];
+    
+    const products = await db.execute({
+      sql: productsQuery,
+      args: productsParams
+    });
+
+    // Запрос для общего количества
+    let countQuery = `SELECT COUNT(*) as count FROM products_info p`;
+    let countParams = [];
+
+    if (whereConditions.length > 0) {
+      countQuery += ' WHERE ' + whereConditions.join(' AND ');
+      countParams = queryParams.slice(1); // убираем userId
+    }
+
+    const totalCount = await db.execute({
+      sql: countQuery,
+      args: countParams
+    });
+
+    // Получаем историю цен
+    if (products.rows.length > 0) {
+      const codes = products.rows.map(p => `'${p.code}'`).join(',');
+      const history = await db.execute(`
+        SELECT product_code, price, updated_at
+        FROM price_history
+        WHERE product_code IN (${codes})
+        ORDER BY product_code, updated_at ASC
+      `);
+
+      const historyByProduct = {};
+      history.rows.forEach(row => {
+        if (!historyByProduct[row.product_code]) {
+          historyByProduct[row.product_code] = [];
+        }
+        historyByProduct[row.product_code].push({
+          date: row.updated_at,
+          price: row.price
+        });
+      });
+
+      products.rows = products.rows.map(p => ({
+        ...p,
+        priceHistory: historyByProduct[p.code] || [],
+        inMonitoring: p.inMonitoring === 1
+      }));
+    }
+
+    res.json({
+      products: products.rows,
+      total: totalCount.rows[0].count,
+      hasMore: offset + limit < totalCount.rows[0].count
+    });
+
+  } catch (err) {
+    console.error('❌ Ошибка в /api/products/paginated:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Аналогично для /api/user/shelf/paginated
+app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 24;
+    const offset = parseInt(req.query.offset) || 0;
+    const categories = req.query.categories ? 
+      (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
+    const brands = req.query.brands ? 
+      (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
+    const search = req.query.search;
+    const sort = req.query.sort || 'price_desc';
+
+    // Определяем сортировку (без favorite)
+    let orderClause = '';
+    switch (sort) {
+      case 'price_asc':
+        orderClause = 'ORDER BY p.last_price ASC, p.code';
+        break;
+      case 'price_desc':
+        orderClause = 'ORDER BY p.last_price DESC, p.code';
+        break;
+      case 'change_asc':
+        orderClause = `
+          ORDER BY COALESCE(
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1), 0
+          ) - COALESCE(
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1 OFFSET 1), 
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1)
+          ) ASC, p.code
+        `;
+        break;
+      case 'change_desc':
+        orderClause = `
+          ORDER BY COALESCE(
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1), 0
+          ) - COALESCE(
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1 OFFSET 1), 
+            (SELECT price FROM price_history ph 
+             WHERE ph.product_code = p.code 
+             ORDER BY ph.updated_at DESC LIMIT 1)
+          ) DESC, p.code
+        `;
+        break;
+      default:
+        orderClause = 'ORDER BY p.last_price DESC, p.code';
+    }
+
+    // Строим WHERE условие
+    let whereConditions = [`us.user_id = ?`];
+    let queryParams = [userId];
+
+    if (categories.length > 0) {
+      const placeholders = categories.map(() => '?').join(',');
+      whereConditions.push(`p.category IN (${placeholders})`);
+      queryParams.push(...categories);
+    }
+    if (brands.length > 0) {
+      const placeholders = brands.map(() => '?').join(',');
+      whereConditions.push(`p.brand IN (${placeholders})`);
+      queryParams.push(...brands);
+    }
+    if (search && search !== '') {
+      const searchLower = search.toLowerCase();
+      whereConditions.push(`(p.name_lower LIKE ? OR p.code LIKE ?)`);
+      queryParams.push(`%${searchLower}%`, `%${search}%`);
+    }
+
+    const whereClause = 'WHERE ' + whereConditions.join(' AND ');
+
+    // Основной запрос
+    const productsQuery = `
+      SELECT 
+        p.*,
+        1 as inMonitoring
+      FROM products_info p
+      INNER JOIN user_shelf us ON p.code = us.product_code
+      ${whereClause}
+      ${orderClause}
+      LIMIT ? OFFSET ?
+    `;
+
+    const productsParams = [...queryParams, limit, offset];
+    
+    const products = await db.execute({
+      sql: productsQuery,
+      args: productsParams
+    });
+
+    // Запрос для общего количества
+    const countQuery = `
+      SELECT COUNT(*) as count 
+      FROM products_info p
+      INNER JOIN user_shelf us ON p.code = us.product_code
+      ${whereClause}
+    `;
+    const countParams = queryParams;
+
+    const totalCount = await db.execute({
+      sql: countQuery,
+      args: countParams
+    });
+
+    // Получаем историю цен
+    if (products.rows.length > 0) {
+      const codes = products.rows.map(p => `'${p.code}'`).join(',');
+      const history = await db.execute(`
+        SELECT product_code, price, updated_at
+        FROM price_history
+        WHERE product_code IN (${codes})
+        ORDER BY product_code, updated_at ASC
+      `);
+
+      const historyByProduct = {};
+      history.rows.forEach(row => {
+        if (!historyByProduct[row.product_code]) {
+          historyByProduct[row.product_code] = [];
+        }
+        historyByProduct[row.product_code].push({
+          date: row.updated_at,
+          price: row.price
+        });
+      });
+
+      products.rows = products.rows.map(p => ({
+        ...p,
+        priceHistory: historyByProduct[p.code] || []
+      }));
+    }
+
+    res.json({
+      products: products.rows,
+      total: totalCount.rows[0].count,
+      hasMore: offset + limit < totalCount.rows[0].count
+    });
+
+  } catch (err) {
+    console.error('❌ Ошибка в /api/user/shelf/paginated:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
