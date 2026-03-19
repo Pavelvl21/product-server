@@ -1543,7 +1543,8 @@ app.get('/api/external/search', authenticateToken, async (req, res) => {
     });
   }
 });
-// ==================== ПОЛУЧЕНИЕ ОПЦИЙ ФИЛЬТРОВ ====================
+
+// ==================== ПОЛУЧЕНИЕ ОПЦИЙ ФИЛЬТРОВ (СВЯЗАННЫЕ) ====================
 app.get('/api/filter-options', authenticateToken, async (req, res) => {
   try {
     const categories = req.query.categories ? 
@@ -1558,7 +1559,8 @@ app.get('/api/filter-options', authenticateToken, async (req, res) => {
       brandCounts: {}
     };
 
-    // ===== 1. СЧИТАЕМ КАТЕГОРИИ (с учетом выбранных брендов) =====
+    // ===== 1. КАТЕГОРИИ (с учетом выбранных брендов) =====
+    // Если выбраны бренды, показываем только категории этих брендов
     let categoryQuery = `
       SELECT category, COUNT(*) as count 
       FROM products_info 
@@ -1583,7 +1585,8 @@ app.get('/api/filter-options', authenticateToken, async (req, res) => {
       response.categoryCounts[row.category] = row.count;
     });
 
-    // ===== 2. СЧИТАЕМ БРЕНДЫ (с учетом выбранных категорий) =====
+    // ===== 2. БРЕНДЫ (с учетом выбранных категорий) =====
+    // Если выбраны категории, показываем только бренды этих категорий
     let brandQuery = `
       SELECT brand, COUNT(*) as count 
       FROM products_info 
