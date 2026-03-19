@@ -1209,8 +1209,9 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
     const brands = req.query.brands ? 
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
+    const sort = req.query.sort || 'price_desc';
 
-    console.log(`📦 Запрос каталога: userId=${userId}, limit=${limit}, offset=${offset}, categories=${categories}, brands=${brands}, search=${search}`);
+    console.log(`📦 Запрос каталога (не в избранном): userId=${userId}, sort=${sort}`);
 
     // Строим WHERE условие
     let whereConditions = [];
@@ -1240,12 +1241,20 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
 
     const whereClause = 'WHERE ' + whereConditions.join(' AND ');
 
+    // Определяем сортировку по цене
+    let orderClause = '';
+    if (sort === 'price_asc') {
+      orderClause = 'ORDER BY CAST(last_price AS REAL) ASC, code';
+    } else {
+      orderClause = 'ORDER BY CAST(last_price AS REAL) DESC, code';
+    }
+
     // Получаем товары с пагинацией
     const products = await db.execute({
       sql: `
         SELECT * FROM products_info 
         ${whereClause}
-        ORDER BY last_update DESC 
+        ${orderClause}
         LIMIT ? OFFSET ?
       `,
       args: [...args, limit, offset]
@@ -1281,7 +1290,8 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
 
       products.rows = products.rows.map(p => ({
         ...p,
-        priceHistory: historyByProduct[p.code] || []
+        priceHistory: historyByProduct[p.code] || [],
+        currentPrice: p.last_price ? parseFloat(p.last_price) : null
       }));
     }
 
@@ -1295,109 +1305,6 @@ app.get('/api/products/catalog', authenticateToken, async (req, res) => {
 
   } catch (err) {
     console.error('❌ Ошибка в /api/products/catalog:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ ПОЛКИ С МУЛЬТИФИЛЬТРАМИ ====================
-app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const limit = parseInt(req.query.limit) || 8;
-    const offset = parseInt(req.query.offset) || 0;
-    const categories = req.query.categories ? 
-      (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
-    const brands = req.query.brands ? 
-      (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
-    const search = req.query.search;
-    
-    console.log(`📦 Запрос полки с пагинацией: userId=${userId}, limit=${limit}, offset=${offset}, categories=${categories}, brands=${brands}, search=${search}`);
-
-    // Строим WHERE условие
-    let whereConditions = [`us.user_id = ${userId}`];
-    
-    if (categories.length > 0) {
-      const cats = categories.map(c => `'${c}'`).join(',');
-      whereConditions.push(`p.category IN (${cats})`);
-    }
-    if (brands.length > 0) {
-      const brds = brands.map(b => `'${b}'`).join(',');
-      whereConditions.push(`p.brand IN (${brds})`);
-    }
-if (search && search !== '') {
-  const searchLower = search.toLowerCase();
-  whereConditions.push(`(p.name_lower LIKE '%${searchLower}%' OR p.code LIKE '%${search}%')`);
-}
-    
-    const whereClause = 'WHERE ' + whereConditions.join(' AND ');
-
-    // Получаем товары с полки с пагинацией
-    const products = await db.execute(`
-      SELECT 
-        p.code,
-        p.name,
-        p.last_price,
-        p.base_price,
-        p.packPrice,
-        p.monthly_payment,
-        p.no_overpayment_max_months,
-        p.category,
-        p.brand,
-        p.link,
-        p.last_update,
-        us.added_at as shelf_added_at
-      FROM products_info p
-      INNER JOIN user_shelf us ON p.code = us.product_code
-      ${whereClause}
-      ORDER BY us.added_at DESC
-      LIMIT ${limit} OFFSET ${offset}
-    `);
-    
-    // Получаем общее количество товаров на полке С УЧЕТОМ ФИЛЬТРОВ
-    const totalCount = await db.execute(`
-      SELECT COUNT(*) as count 
-      FROM products_info p
-      INNER JOIN user_shelf us ON p.code = us.product_code
-      ${whereClause}
-    `);
-    
-    // Если есть товары, получаем для них историю цен
-    if (products.rows.length > 0) {
-      const codes = products.rows.map(p => `'${p.code}'`).join(',');
-      
-      const history = await db.execute(`
-        SELECT product_code, price, updated_at
-        FROM price_history
-        WHERE product_code IN (${codes})
-        ORDER BY product_code, updated_at ASC
-      `);
-
-      const historyByProduct = {};
-      history.rows.forEach(row => {
-        if (!historyByProduct[row.product_code]) {
-          historyByProduct[row.product_code] = [];
-        }
-        historyByProduct[row.product_code].push({
-          date: row.updated_at,
-          price: row.price
-        });
-      });
-
-      products.rows = products.rows.map(p => ({
-        ...p,
-        priceHistory: historyByProduct[p.code] || []
-      }));
-    }
-    
-    console.log(`✅ Полка: ${products.rows.length} товаров, всего: ${totalCount.rows[0].count}`);
-    
-    res.json({
-      products: products.rows,
-      total: totalCount.rows[0].count,
-      hasMore: offset + limit < totalCount.rows[0].count
-    });
-    
-  } catch (err) {
-    console.error('❌ Ошибка полки с пагинацией:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1933,7 +1840,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
   }
 });
 
-// Аналогично для /api/user/shelf/paginated
+// ==================== ПАГИНИРОВАННЫЙ ЭНДПОИНТ ДЛЯ ИЗБРАННОГО ====================
 app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1946,52 +1853,15 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
     const search = req.query.search;
     const sort = req.query.sort || 'price_desc';
 
-    // Определяем сортировку (без favorite)
+    // Определяем сортировку (только по цене, без favorite)
     let orderClause = '';
-    switch (sort) {
-      case 'price_asc':
-        orderClause = 'ORDER BY p.last_price ASC, p.code';
-        break;
-      case 'price_desc':
-        orderClause = 'ORDER BY p.last_price DESC, p.code';
-        break;
-      case 'change_asc':
-        orderClause = `
-          ORDER BY COALESCE(
-            (SELECT price FROM price_history ph 
-             WHERE ph.product_code = p.code 
-             ORDER BY ph.updated_at DESC LIMIT 1), 0
-          ) - COALESCE(
-            (SELECT price FROM price_history ph 
-             WHERE ph.product_code = p.code 
-             ORDER BY ph.updated_at DESC LIMIT 1 OFFSET 1), 
-            (SELECT price FROM price_history ph 
-             WHERE ph.product_code = p.code 
-             ORDER BY ph.updated_at DESC LIMIT 1)
-          ) ASC, p.code
-        `;
-        break;
-      case 'change_desc':
-        orderClause = `
-          ORDER BY COALESCE(
-            (SELECT price FROM price_history ph 
-             WHERE ph.product_code = p.code 
-             ORDER BY ph.updated_at DESC LIMIT 1), 0
-          ) - COALESCE(
-            (SELECT price FROM price_history ph 
-             WHERE ph.product_code = p.code 
-             ORDER BY ph.updated_at DESC LIMIT 1 OFFSET 1), 
-            (SELECT price FROM price_history ph 
-             WHERE ph.product_code = p.code 
-             ORDER BY ph.updated_at DESC LIMIT 1)
-          ) DESC, p.code
-        `;
-        break;
-      default:
-        orderClause = 'ORDER BY p.last_price DESC, p.code';
+    if (sort === 'price_asc') {
+      orderClause = 'ORDER BY CAST(p.last_price AS REAL) ASC, p.code';
+    } else {
+      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code'; // по умолчанию
     }
 
-    // Строим WHERE условие
+    // Строим WHERE условие с параметрами (БЕЗ конкатенации!)
     let whereConditions = [`us.user_id = ?`];
     let queryParams = [userId];
 
@@ -2013,10 +1883,21 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
 
     const whereClause = 'WHERE ' + whereConditions.join(' AND ');
 
-    // Основной запрос
+    // Основной запрос с пагинацией
     const productsQuery = `
       SELECT 
-        p.*,
+        p.code,
+        p.name,
+        p.last_price,
+        p.base_price,
+        p.packPrice,
+        p.monthly_payment,
+        p.no_overpayment_max_months,
+        p.category,
+        p.brand,
+        p.link,
+        p.last_update,
+        us.added_at as shelf_added_at,
         1 as inMonitoring
       FROM products_info p
       INNER JOIN user_shelf us ON p.code = us.product_code
@@ -2039,16 +1920,16 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
       INNER JOIN user_shelf us ON p.code = us.product_code
       ${whereClause}
     `;
-    const countParams = queryParams;
-
+    
     const totalCount = await db.execute({
       sql: countQuery,
-      args: countParams
+      args: queryParams
     });
 
     // Получаем историю цен
     if (products.rows.length > 0) {
       const codes = products.rows.map(p => `'${p.code}'`).join(',');
+      
       const history = await db.execute(`
         SELECT product_code, price, updated_at
         FROM price_history
@@ -2069,7 +1950,8 @@ app.get('/api/user/shelf/paginated', authenticateToken, async (req, res) => {
 
       products.rows = products.rows.map(p => ({
         ...p,
-        priceHistory: historyByProduct[p.code] || []
+        priceHistory: historyByProduct[p.code] || [],
+        currentPrice: p.last_price ? parseFloat(p.last_price) : null
       }));
     }
 
