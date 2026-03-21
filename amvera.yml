@@ -9,11 +9,4 @@ run:
   scriptName: server.js
   containerPort: 3000
   servicePort: 80
-  healthCheck:
-    path: /health
-    port: 3000
-    initialDelay: 15
-    period: 10
-    timeout: 5
-    successThreshold: 1
-    failureThreshold: 3
+  
