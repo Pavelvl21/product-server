@@ -1775,13 +1775,13 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
     let whereConditions = [];
     let queryParams = [userId];
 
-    // Фильтр по датам (товары, у которых есть изменения цен в указанном диапазоне)
+    // Фильтр по датам (исправлено для SQLite)
     if (dateFrom && dateTo) {
       whereConditions.push(`
         p.code IN (
           SELECT DISTINCT product_code 
           FROM price_history 
-          WHERE DATE(updated_at) BETWEEN ? AND ?
+          WHERE date(updated_at) >= date(?) AND date(updated_at) <= date(?)
         )
       `);
       queryParams.push(dateFrom, dateTo);
@@ -1790,7 +1790,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
         p.code IN (
           SELECT DISTINCT product_code 
           FROM price_history 
-          WHERE DATE(updated_at) >= ?
+          WHERE date(updated_at) >= date(?)
         )
       `);
       queryParams.push(dateFrom);
@@ -1799,7 +1799,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
         p.code IN (
           SELECT DISTINCT product_code 
           FROM price_history 
-          WHERE DATE(updated_at) <= ?
+          WHERE date(updated_at) <= date(?)
         )
       `);
       queryParams.push(dateTo);
@@ -1874,7 +1874,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
         code IN (
           SELECT DISTINCT product_code 
           FROM price_history 
-          WHERE DATE(updated_at) BETWEEN ? AND ?
+          WHERE date(updated_at) >= date(?) AND date(updated_at) <= date(?)
         )
       `);
       countParams.push(dateFrom, dateTo);
@@ -1883,7 +1883,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
         code IN (
           SELECT DISTINCT product_code 
           FROM price_history 
-          WHERE DATE(updated_at) >= ?
+          WHERE date(updated_at) >= date(?)
         )
       `);
       countParams.push(dateFrom);
@@ -1892,7 +1892,7 @@ app.get('/api/products/paginated', authenticateToken, async (req, res) => {
         code IN (
           SELECT DISTINCT product_code 
           FROM price_history 
-          WHERE DATE(updated_at) <= ?
+          WHERE date(updated_at) <= date(?)
         )
       `);
       countParams.push(dateTo);
