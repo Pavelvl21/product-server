@@ -272,10 +272,11 @@ export async function updateAllPrices() {
             method: "POST"
           });
 
-          if (!response.ok) {
-            batchErrors++;
-            continue;
-          }
+if (!response.ok) {
+  console.log(`❌ ТОВАР ${code} НЕ ОБНОВЛЁН! Статус: ${response.status}`);
+  batchErrors++;
+  continue;
+}
 
           const data = await response.json();
           const product = data.data.productCards[0];
