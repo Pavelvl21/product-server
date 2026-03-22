@@ -10,21 +10,10 @@ import {
 } from './telegramBroadcast.js';
 import { config } from './src/config/env.js';
 
-
 const BOT_TOKEN = config.TELEGRAM_BOT_TOKEN;
 const ADMIN_CHAT_ID = config.TELEGRAM_CHAT_ID;
 const SECRET_KEY = config.SECRET_KEY;
 const API_URL = config.API_URL || 'http://localhost:3000';
-
-// После импортов
-if (!API_URL) {
-  console.error('❌ API_URL не задан в переменных окружения');
-  process.exit(1);
-}
-
-console.log(`🤖 Telegram бот запущен`);
-console.log(`🌐 API_URL: ${API_URL}`);
-console.log(`🔑 SECRET_KEY: ${SECRET_KEY ? '✅ установлен' : '❌ не установлен'}`);
 
 // Хранилище для rate limiting
 const userLastCommand = new Map();
