@@ -1,0 +1,423 @@
+import db from '../../database.js';
+import { CONSTANTS } from '../config/constants.js';
+import { SafeQueryBuilder, getOrderByClause } from '../services/queryBuilder.js';
+import Logger from '../services/logger.js';
+import { updatePricesForNewCode } from '../../priceUpdater.js';
+import { schemas } from '../middleware/validation.js';
+
+export async function getProducts(req, res, next) {
+  try {
+    const products = await db.execute('SELECT * FROM products_info');
+    
+    const history = await db.execute(`
+      SELECT product_code, price, updated_at
+      FROM price_history
+      WHERE updated_at >= datetime('now', '-90 days')
+      ORDER BY product_code, updated_at ASC
+    `);
+    
+    const historyByProduct = {};
+    history.rows.forEach(row => {
+      if (!historyByProduct[row.product_code]) {
+        historyByProduct[row.product_code] = [];
+      }
+      historyByProduct[row.product_code].push({
+        date: row.updated_at,
+        price: row.price
+      });
+    });
+    
+    const dates = await db.execute(`
+      SELECT DISTINCT DATE(updated_at) as d
+      FROM price_history
+      WHERE updated_at >= datetime('now', '-90 days')
+      ORDER BY d ASC
+    `);
+    
+    const allDates = dates.rows.map(row => row.d);
+    
+    const result = products.rows.map(p => {
+      const allProductHistory = historyByProduct[p.code] || [];
+      const prices = {};
+      
+      allDates.forEach(date => {
+        const dayRecords = allProductHistory.filter(h => h.date.startsWith(date));
+        if (dayRecords.length > 0) {
+          const last = dayRecords.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+          prices[date] = last.price;
+        } else {
+          const prev = allProductHistory.filter(h => h.date < date)
+            .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+          if (prev) prices[date] = prev.price;
+        }
+      });
+      
+      return {
+        code: p.code,
+        name: p.name,
+        link: p.link,
+        category: p.category || 'Товары',
+        brand: p.brand || 'Без бренда',
+        base_price: p.base_price,
+        packPrice: p.packPrice,
+        monthly_payment: p.monthly_payment,
+        no_overpayment_max_months: p.no_overpayment_max_months,
+        prices: prices,
+        priceHistory: allProductHistory,
+        currentPrice: p.last_price,
+        lastUpdate: p.last_update
+      };
+    });
+    
+    res.json({ dates: allDates.reverse(), products: result });
+    
+  } catch (err) {
+    Logger.error('Ошибка получения продуктов', err);
+    next(err);
+  }
+}
+
+export async function getPaginatedProducts(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || CONSTANTS.DEFAULT_PAGE_SIZE;
+    const offset = parseInt(req.query.offset) || 0;
+    const categories = req.query.categories ? 
+      (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
+    const brands = req.query.brands ? 
+      (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
+    const search = req.query.search;
+    const sort = req.query.sort || 'default';
+    
+    const builder = new SafeQueryBuilder();
+    
+    builder.addInCondition('p.category', categories);
+    builder.addInCondition('p.brand', brands);
+    builder.addLikeCondition('p.name_lower', search);
+    builder.addLikeCondition('p.code', search);
+    
+    const { whereClause, params } = builder.buildWhere();
+    const orderClause = getOrderByClause(sort);
+    
+    const allParams = [userId, ...params];
+    
+    const products = await db.execute({
+      sql: `
+        SELECT 
+          p.*,
+          CASE WHEN us.user_id IS NOT NULL THEN 1 ELSE 0 END as inMonitoring
+        FROM products_info p
+        LEFT JOIN user_shelf us ON p.code = us.product_code AND us.user_id = ?
+        ${whereClause}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `,
+      args: [...allParams, limit, offset]
+    });
+    
+    const countResult = await db.execute({
+      sql: `SELECT COUNT(*) as count FROM products_info p ${whereClause}`,
+      args: params
+    });
+    
+    if (products.rows.length > 0) {
+      const codes = products.rows.map(p => p.code);
+      const placeholders = codes.map(() => '?').join(',');
+      
+      const history = await db.execute({
+        sql: `
+          SELECT product_code, price, updated_at
+          FROM price_history
+          WHERE product_code IN (${placeholders})
+          ORDER BY product_code, updated_at ASC
+        `,
+        args: codes
+      });
+      
+      const historyByProduct = {};
+      history.rows.forEach(row => {
+        if (!historyByProduct[row.product_code]) {
+          historyByProduct[row.product_code] = [];
+        }
+        historyByProduct[row.product_code].push({
+          date: row.updated_at,
+          price: row.price
+        });
+      });
+      
+      products.rows = products.rows.map(p => ({
+        ...p,
+        priceHistory: historyByProduct[p.code] || [],
+        currentPrice: p.last_price ? parseFloat(p.last_price) : null
+      }));
+    }
+    
+    res.json({
+      products: products.rows,
+      total: countResult.rows[0].count,
+      hasMore: offset + limit < countResult.rows[0].count
+    });
+    
+  } catch (err) {
+    Logger.error('Ошибка в getPaginatedProducts', err);
+    next(err);
+  }
+}
+
+export async function getCodes(req, res, next) {
+  try {
+    const result = await db.execute('SELECT code FROM product_codes ORDER BY created_at DESC');
+    res.json(result.rows.map(r => r.code));
+  } catch (err) {
+    Logger.error('Ошибка получения кодов', err);
+    next(err);
+  }
+}
+
+export async function addCode(req, res, next) {
+  try {
+    const { code } = req.validatedBody;
+    
+    // Атомарная проверка лимита и вставка
+    const result = await db.execute({
+      sql: `
+        INSERT INTO product_codes (code)
+        SELECT ? WHERE (SELECT COUNT(*) FROM product_codes) < ?
+        ON CONFLICT(code) DO NOTHING
+        RETURNING code
+      `,
+      args: [code, CONSTANTS.MAX_PRODUCTS]
+    });
+    
+    if (result.rows.length === 0) {
+      const exists = await db.execute({
+        sql: 'SELECT code FROM product_codes WHERE code = ?',
+        args: [code]
+      });
+      
+      if (exists.rows.length > 0) {
+        return res.json({ message: 'Код уже существует' });
+      }
+      return res.status(400).json({ error: `Лимит ${CONSTANTS.MAX_PRODUCTS} товаров` });
+    }
+    
+    // Запускаем обновление в фоне
+    updatePricesForNewCode(code).catch(err => {
+      Logger.error('Ошибка обновления для нового кода', err, { code });
+    });
+    
+    Logger.info('Код добавлен', { code });
+    res.status(201).json({ message: 'Код добавлен, данные загружаются' });
+    
+  } catch (err) {
+    Logger.error('Ошибка добавления кода', err, { code: req.body?.code });
+    next(err);
+  }
+}
+
+export async function bulkAddCodes(req, res, next) {
+  try {
+    const { codes } = req.validatedBody;
+    const results = { added: [], failed: [] };
+    
+    for (const code of codes) {
+      try {
+        const result = await db.execute({
+          sql: `
+            INSERT INTO product_codes (code)
+            SELECT ? WHERE (SELECT COUNT(*) FROM product_codes) < ?
+            ON CONFLICT(code) DO NOTHING
+            RETURNING code
+          `,
+          args: [code, CONSTANTS.MAX_PRODUCTS]
+        });
+        
+        if (result.rows.length > 0) {
+          results.added.push(code);
+          updatePricesForNewCode(code).catch(err => {
+            Logger.error('Ошибка обновления для кода', err, { code });
+          });
+        } else {
+          const exists = await db.execute({
+            sql: 'SELECT code FROM product_codes WHERE code = ?',
+            args: [code]
+          });
+          
+          if (exists.rows.length > 0) {
+            results.failed.push({ code, reason: 'уже существует' });
+          } else {
+            results.failed.push({ code, reason: 'лимит 5000 товаров' });
+          }
+        }
+      } catch (err) {
+        Logger.error('Ошибка при массовом добавлении кода', err, { code });
+        results.failed.push({ code, reason: 'ошибка сервера' });
+      }
+    }
+    
+    Logger.info('Массовое добавление кодов', { added: results.added.length, failed: results.failed.length });
+    res.json({ message: `Добавлено ${results.added.length} кодов`, results });
+    
+  } catch (err) {
+    Logger.error('Ошибка массового добавления кодов', err);
+    next(err);
+  }
+}
+
+export async function deleteCode(req, res, next) {
+  try {
+    const { code } = req.params;
+    
+    await db.execute({ 
+      sql: 'DELETE FROM price_history WHERE product_code = ?', 
+      args: [code] 
+    });
+    
+    await db.execute({ 
+      sql: 'DELETE FROM products_info WHERE code = ?', 
+      args: [code] 
+    });
+    
+    const result = await db.execute({ 
+      sql: 'DELETE FROM product_codes WHERE code = ? RETURNING code', 
+      args: [code] 
+    });
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Код не найден' });
+    }
+    
+    Logger.info('Код удален', { code });
+    res.json({ message: 'Код удалён' });
+    
+  } catch (err) {
+    Logger.error('Ошибка удаления кода', err, { code: req.params?.code });
+    next(err);
+  }
+}
+
+export async function checkProduct(req, res, next) {
+  try {
+    const { code } = req.params;
+    
+    const product = await db.execute({
+      sql: 'SELECT * FROM products_info WHERE code = ?',
+      args: [code]
+    });
+    
+    if (product.rows.length === 0) {
+      return res.json({ exists: false, message: 'Товар не найден в базе данных' });
+    }
+    
+    const history = await db.execute({
+      sql: `
+        SELECT price, updated_at
+        FROM price_history
+        WHERE product_code = ?
+        ORDER BY updated_at ASC
+      `,
+      args: [code]
+    });
+    
+    res.json({
+      exists: true,
+      product: {
+        code: product.rows[0].code,
+        name: product.rows[0].name,
+        link: product.rows[0].link,
+        category: product.rows[0].category || 'Товары',
+        brand: product.rows[0].brand || 'Без бренда',
+        base_price: product.rows[0].base_price,
+        packPrice: product.rows[0].packPrice,
+        monthly_payment: product.rows[0].monthly_payment,
+        no_overpayment_max_months: product.rows[0].no_overpayment_max_months,
+        currentPrice: product.rows[0].last_price,
+        lastUpdate: product.rows[0].last_update,
+        priceHistory: history.rows.map(row => ({
+          date: row.updated_at,
+          price: row.price
+        }))
+      }
+    });
+    
+  } catch (err) {
+    Logger.error('Ошибка проверки товара', err, { code: req.params?.code });
+    next(err);
+  }
+}
+
+export async function addFullProduct(req, res, next) {
+  try {
+    const { 
+      code, name, price, base_price, packPrice, 
+      category, brand, monthly_payment, no_overpayment_max_months, link 
+    } = req.body;
+    
+    // Атомарная проверка существования и лимита
+    const existingResult = await db.execute({
+      sql: 'SELECT code FROM product_codes WHERE code = ?',
+      args: [code]
+    });
+    
+    if (existingResult.rows.length > 0) {
+      return res.status(400).json({ error: 'Товар уже существует в базе' });
+    }
+    
+    const countResult = await db.execute({
+      sql: 'SELECT COUNT(*) as count FROM product_codes'
+    });
+    
+    if (countResult.rows[0].count >= CONSTANTS.MAX_PRODUCTS) {
+      return res.status(400).json({ error: `Лимит ${CONSTANTS.MAX_PRODUCTS} товаров` });
+    }
+    
+    // Транзакция
+    await db.execute({
+      sql: 'INSERT INTO product_codes (code) VALUES (?)',
+      args: [code]
+    });
+    
+    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    const nameLower = name ? name.toLowerCase() : '';
+    
+    await db.execute({
+      sql: `
+        INSERT INTO products_info (
+          code, name, last_price, base_price, packPrice,
+          monthly_payment, no_overpayment_max_months,
+          link, category, brand, last_update, name_lower
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code) DO UPDATE SET
+          name = excluded.name,
+          last_price = excluded.last_price,
+          base_price = excluded.base_price,
+          packPrice = excluded.packPrice,
+          monthly_payment = excluded.monthly_payment,
+          no_overpayment_max_months = excluded.no_overpayment_max_months,
+          link = excluded.link,
+          category = excluded.category,
+          brand = excluded.brand,
+          last_update = excluded.last_update,
+          name_lower = excluded.name_lower
+      `,
+      args: [
+        code, name, price, base_price, packPrice,
+        monthly_payment, no_overpayment_max_months,
+        link || '', category, brand, now, nameLower
+      ]
+    });
+    
+    await db.execute({
+      sql: 'INSERT INTO price_history (product_code, product_name, price, updated_at) VALUES (?, ?, ?, ?)',
+      args: [code, name, price, now]
+    });
+    
+    Logger.info('Товар добавлен с полными данными', { code, name });
+    res.json({ success: true, message: 'Товар успешно добавлен', code });
+    
+  } catch (err) {
+    Logger.error('Ошибка добавления товара', err, { code: req.body?.code });
+    next(err);
+  }
+}
