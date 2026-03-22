@@ -8,11 +8,13 @@ import {
   formatSubscriberStats,
   sendTestMessage,
 } from './telegramBroadcast.js';
+import { config } from './src/config/env.js';
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const SECRET_KEY = process.env.SECRET_KEY;
-const API_URL = process.env.API_URL || 'http://localhost:3000';
+// Затем замените:
+const BOT_TOKEN = config.TELEGRAM_BOT_TOKEN;
+const ADMIN_CHAT_ID = config.TELEGRAM_CHAT_ID;
+const SECRET_KEY = config.SECRET_KEY;
+const API_URL = config.API_URL || 'http://localhost:3000';
 
 // Хранилище для rate limiting
 const userLastCommand = new Map();
