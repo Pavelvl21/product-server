@@ -185,21 +185,34 @@ async function lockUserSelection(telegramId) {
 // ==================== НОВАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ТОВАРОВ ИЗ МОНИТОРИНГА ====================
 async function getUserMonitoringProducts(telegramId) {
   try {
-    const userResult = await db.execute({
-      sql: 'SELECT id FROM users WHERE telegram_id = ?',
+    // 1. Сначала ищем пользователя в таблице telegram_users
+    const telegramUser = await db.execute({
+      sql: 'SELECT user_id FROM telegram_users WHERE telegram_id = ?',
       args: [telegramId]
     });
     
-    if (userResult.rows.length === 0) return [];
+    if (telegramUser.rows.length === 0) {
+      console.log(`❌ Пользователь ${telegramId} не найден в telegram_users`);
+      return [];
+    }
     
-    const userId = userResult.rows[0].id;
+    const userId = telegramUser.rows[0].user_id;
     
+    if (!userId) {
+      console.log(`⚠️ У пользователя ${telegramId} нет привязки к users (user_id = null)`);
+      return [];
+    }
+    
+    // 2. Получаем товары из мониторинга
     const monitoringResult = await db.execute({
       sql: 'SELECT product_code FROM user_shelf WHERE user_id = ?',
       args: [userId]
     });
     
+    console.log(`📦 Найдено товаров в мониторинге: ${monitoringResult.rows.length}`);
+    
     return monitoringResult.rows.map(row => row.product_code);
+    
   } catch (err) {
     logError('getUserMonitoringProducts', err, `telegramId:${telegramId}`);
     return [];
