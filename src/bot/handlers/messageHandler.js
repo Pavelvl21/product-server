@@ -85,64 +85,88 @@ export async function handleMessage(message) {
       await sendMessage(chatId, formatStatusMessage(user));
       return;
     }
-    // /goods
-    if (text === "/goods") {
-      if (!checkRateLimit(userId, "/goods")) return;
-      const monitoringCodes = await getUserMonitoringProducts(userId);
-      if (monitoringCodes.length === 0) {
-        await sendMessage(chatId, "📭 У вас нет товаров в мониторинге");
-        return;
-      }
-      const data = await getProductsFromServer();
-      if (!data?.products) {
-        await sendMessage(chatId, "❌ Не удалось получить список товаров");
-        return;
-      }
-      const monitoringProducts = data.products.filter((p) =>
-        monitoringCodes.includes(p.code),
-      );
-      if (!monitoringProducts.length) {
-        await sendMessage(chatId, "📭 В вашем мониторинге нет товаров");
-        return;
-      }
-      await sendMessage(
-        chatId,
-        `📦 В вашем мониторинге: ${monitoringProducts.length} товаров. Отправляю список...`,
-      );
-      const batchSize = 50;
-      for (let i = 0; i < monitoringProducts.length; i += batchSize) {
-        const batch = monitoringProducts.slice(i, i + batchSize);
-        const list = batch.map((p) => `• ${p.name}`).join("\n");
-        const header = `📋 Часть ${Math.floor(i / batchSize) + 1}/${Math.ceil(monitoringProducts.length / batchSize)}:\n\n`;
-        await sendMessage(chatId, header + list);
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      }
+// /goods
+if (text === '/goods') {
+  if (!checkRateLimit(userId, '/goods')) return;
+
+  const monitoringCodes = await getUserMonitoringProducts(userId);
+  
+  if (monitoringCodes.length === 0) {
+    await sendMessage(chatId, '📭 У вас нет товаров в мониторинге');
+    return;
+  }
+
+  // Отправляем временное сообщение о загрузке
+  const loadingMsg = await sendMessage(chatId, '⏳ Загружаю список товаров...');
+
+  try {
+    const data = await getProductsFromServer();
+    if (!data?.products) {
+      await editMessageText(chatId, loadingMsg.message_id, '❌ Не удалось получить список товаров');
       return;
     }
-    // /changes
-    if (text === "/changes") {
-      if (!checkRateLimit(userId, "/changes")) return;
-      const monitoringCodes = await getUserMonitoringProducts(userId);
-      if (monitoringCodes.length === 0) {
-        await sendMessage(chatId, "📭 У вас нет товаров в мониторинге");
-        return;
-      }
-      const allChanges = await getPriceChanges();
-      const changes = allChanges.filter((c) =>
-        monitoringCodes.includes(c.product_code),
-      );
-      if (!changes.length) {
-        await sendMessage(chatId, "📭 Сегодня нет изменений по вашим товарам");
-        return;
-      }
-      // Форматируем все изменения в одно сообщение
-      const message = formatChangesList(
-        changes,
-        "📊 ИЗМЕНЕНИЯ ЦЕН В МОНИТОРИНГЕ",
-      );
-      await sendMessage(chatId, message);
+
+    const monitoringProducts = data.products.filter(p => monitoringCodes.includes(p.code));
+
+    if (!monitoringProducts.length) {
+      await editMessageText(chatId, loadingMsg.message_id, '📭 В вашем мониторинге нет товаров');
       return;
     }
+
+    // Формируем список товаров
+    let message = `📦 В вашем мониторинге: ${monitoringProducts.length} товаров.\n\n`;
+    const batchSize = 50;
+    
+    for (let i = 0; i < monitoringProducts.length; i += batchSize) {
+      const batch = monitoringProducts.slice(i, i + batchSize);
+      const list = batch.map(p => `• ${p.name}`).join('\n');
+      message += `📋 Часть ${Math.floor(i/batchSize) + 1}/${Math.ceil(monitoringProducts.length/batchSize)}:\n\n${list}\n\n`;
+    }
+    
+    await editMessageText(chatId, loadingMsg.message_id, message);
+    
+  } catch (err) {
+    Logger.error('Ошибка при получении товаров', err, { userId });
+    await editMessageText(chatId, loadingMsg.message_id, '❌ Произошла ошибка при загрузке списка товаров');
+  }
+  
+  return;
+}
+// /changes
+if (text === '/changes') {
+  if (!checkRateLimit(userId, '/changes')) return;
+
+  const monitoringCodes = await getUserMonitoringProducts(userId);
+  
+  if (monitoringCodes.length === 0) {
+    await sendMessage(chatId, '📭 У вас нет товаров в мониторинге');
+    return;
+  }
+
+  // Отправляем временное сообщение о загрузке
+  const loadingMsg = await sendMessage(chatId, '⏳ Загружаю изменения цен...');
+  
+  try {
+    const allChanges = await getPriceChanges();
+    const changes = allChanges.filter(c => monitoringCodes.includes(c.product_code));
+
+    if (!changes.length) {
+      // Редактируем сообщение
+      await editMessageText(chatId, loadingMsg.message_id, '📭 Сегодня нет изменений по вашим товарам');
+      return;
+    }
+
+    // Форматируем все изменения в одно сообщение
+    const message = formatChangesList(changes, '📊 ИЗМЕНЕНИЯ ЦЕН В МОНИТОРИНГЕ');
+    await editMessageText(chatId, loadingMsg.message_id, message);
+    
+  } catch (err) {
+    Logger.error('Ошибка при получении изменений', err, { userId });
+    await editMessageText(chatId, loadingMsg.message_id, '❌ Произошла ошибка при загрузке изменений цен');
+  }
+  
+  return;
+}
     // /help
     if (text === "/help") {
       await sendMessage(chatId, formatHelpMessage());

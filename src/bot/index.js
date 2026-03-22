@@ -141,6 +141,63 @@ export async function handleTelegramUpdate(update) {
   }
 }
 
+/**
+ * Редактирование текста существующего сообщения
+ * @param {number} chatId - ID чата
+ * @param {number} messageId - ID сообщения
+ * @param {string} text - Новый текст
+ * @param {object} options - Дополнительные опции
+ * @returns {Promise<object|boolean>}
+ */
+export async function editMessageText(chatId, messageId, text, options = {}) {
+  if (!BOT_TOKEN) return false;
+  
+  try {
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...options
+      })
+    });
+    
+    return await response.json();
+  } catch (err) {
+    Logger.error('Ошибка редактирования сообщения', err, { chatId, messageId });
+    return false;
+  }
+}
+
+/**
+ * Отправка действия (typing, upload_photo, etc.)
+ * @param {number} chatId - ID чата
+ * @param {string} action - Действие (typing, upload_photo, etc.)
+ */
+export async function sendChatAction(chatId, action = 'typing') {
+  if (!BOT_TOKEN) return;
+  
+  try {
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendChatAction`;
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        action: action
+      })
+    });
+  } catch (err) {
+    Logger.error('Ошибка отправки действия', err, { chatId, action });
+  }
+}
+
 // Экспорт для обратной совместимости со старым кодом
 export { handleTelegramUpdate as default };
 export { formatChangesList } from './services/messageFormatter.js';
+export { editMessageText, sendChatAction };
