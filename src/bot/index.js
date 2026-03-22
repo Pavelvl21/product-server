@@ -5,12 +5,29 @@ import { handleAdminCallback } from './handlers/adminHandler.js';
 import Logger from '../services/logger.js';
 
 const BOT_TOKEN = config.TELEGRAM_BOT_TOKEN;
+const ADMIN_CHAT_ID = config.TELEGRAM_CHAT_ID;
 
+// Проверка наличия токена
+if (!BOT_TOKEN) {
+  Logger.error('TELEGRAM_BOT_TOKEN не задан в переменных окружения');
+}
+
+/**
+ * Отправка сообщения в Telegram
+ * @param {number} chatId - ID чата
+ * @param {string} text - Текст сообщения
+ * @param {object} options - Дополнительные опции (reply_markup, etc)
+ * @returns {Promise<object|boolean>}
+ */
 export async function sendMessage(chatId, text, options = {}) {
-  if (!BOT_TOKEN) return false;
+  if (!BOT_TOKEN) {
+    Logger.error('Невозможно отправить сообщение: BOT_TOKEN не задан');
+    return false;
+  }
+  
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-    const res = await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -21,15 +38,42 @@ export async function sendMessage(chatId, text, options = {}) {
         ...options
       })
     });
-    return await res.json();
+    
+    const result = await response.json();
+    
+    if (!result.ok) {
+      Logger.error('Telegram API ошибка', null, { description: result.description });
+    }
+    
+    return result;
   } catch (err) {
-    Logger.error('Ошибка отправки сообщения', err);
+    Logger.error('Ошибка отправки сообщения', err, { chatId });
     return false;
   }
 }
 
+/**
+ * Отправка сообщения администратору
+ * @param {string} message - Текст сообщения
+ * @returns {Promise<object|boolean>}
+ */
+export async function sendTelegramMessage(message) {
+  if (!ADMIN_CHAT_ID) {
+    Logger.warn('TELEGRAM_CHAT_ID не задан, уведомления админу не будут работать');
+    return false;
+  }
+  return await sendMessage(ADMIN_CHAT_ID, message);
+}
+
+/**
+ * Редактирование клавиатуры у существующего сообщения
+ * @param {number} chatId - ID чата
+ * @param {number} messageId - ID сообщения
+ * @param {object} replyMarkup - Новая клавиатура
+ */
 export async function editMessageReplyMarkup(chatId, messageId, replyMarkup) {
   if (!BOT_TOKEN) return;
+  
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/editMessageReplyMarkup`;
     await fetch(url, {
@@ -42,12 +86,19 @@ export async function editMessageReplyMarkup(chatId, messageId, replyMarkup) {
       })
     });
   } catch (err) {
-    Logger.error('Ошибка редактирования клавиатуры', err);
+    Logger.error('Ошибка редактирования клавиатуры', err, { chatId, messageId });
   }
 }
 
-export async function answerCallback(callbackId, text) {
+/**
+ * Ответ на callback запрос (убирает "часики" у кнопки)
+ * @param {string} callbackId - ID callback запроса
+ * @param {string} text - Текст уведомления
+ * @param {boolean} showAlert - Показывать alert или нет
+ */
+export async function answerCallback(callbackId, text, showAlert = false) {
   if (!BOT_TOKEN) return;
+  
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`;
     await fetch(url, {
@@ -56,21 +107,31 @@ export async function answerCallback(callbackId, text) {
       body: JSON.stringify({
         callback_query_id: callbackId,
         text: text,
-        show_alert: false
+        show_alert: showAlert
       })
     });
   } catch (err) {
-    Logger.error('Ошибка ответа на callback', err);
+    Logger.error('Ошибка ответа на callback', err, { callbackId });
   }
 }
 
+/**
+ * Главный обработчик обновлений от Telegram
+ * @param {object} update - Объект обновления от Telegram
+ */
 export async function handleTelegramUpdate(update) {
   try {
+    // Обработка обычных сообщений
     if (update.message) {
       await handleMessage(update.message);
     }
+    
+    // Обработка callback запросов (нажатия на кнопки)
     if (update.callback_query) {
+      // Сначала пробуем обработать как админский callback
       const isAdminHandled = await handleAdminCallback(update.callback_query);
+      
+      // Если не админский, обрабатываем как обычный
       if (!isAdminHandled) {
         await handleCallback(update.callback_query);
       }
@@ -79,3 +140,6 @@ export async function handleTelegramUpdate(update) {
     Logger.error('Критическая ошибка в обработчике обновлений', err);
   }
 }
+
+// Экспорт для обратной совместимости со старым кодом
+export { handleTelegramUpdate as default };
