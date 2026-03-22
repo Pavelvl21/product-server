@@ -1,4 +1,4 @@
-import Logger from './logger.js';
+import Logger from '../../services/logger.js';
 
 /**
  * Коллектор уведомлений об изменениях цен

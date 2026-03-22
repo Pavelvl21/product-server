@@ -1,8 +1,7 @@
 import db from './database.js';
 import { updateCategoryBrandRelations } from './categoryRelations.js';
-import { sendTelegramMessage } from './telegramBot.js';
-import { formatPriceChangeNotification } from './src/bot/services/messageFormatter.js';
-import { notificationCollector } from './src/services/notificationCollector.js';
+import { sendTelegramMessage } from './src/bot/index.js';
+import { notificationCollector } from './src/bot/services/notificationCollector.js';
 
 async function insertPriceRecord(code, name, price, timestamp) {
   await db.execute({
@@ -53,15 +52,6 @@ async function saveProductData(product, timestamp) {
     });
 
     const lastPrice = lastRecord.rows[0]?.price;
-
-    const productWithPrices = {
-      ...product,
-      code,
-      category,
-      realPrice,
-      basePrice,
-      packPrice
-    };
 
     // Проверяем, есть ли товар в мониторинге и получаем подписчиков
     const monitoringCheck = await db.execute({
