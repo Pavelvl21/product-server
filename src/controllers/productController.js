@@ -93,8 +93,12 @@ export async function getPaginatedProducts(req, res, next) {
     
     builder.addInCondition('p.category', categories);
     builder.addInCondition('p.brand', brands);
-    builder.addLikeCondition('p.name_lower', search);
-    builder.addLikeCondition('p.code', search);
+    
+    // Исправление: поиск по OR (как в оригинале)
+    if (search && search.trim() !== '') {
+      const searchLower = search.toLowerCase().trim();
+      builder.addCondition(`(p.name_lower LIKE ? OR p.code LIKE ?)`, `%${searchLower}%`, `%${search}%`);
+    }
     
     const { whereClause, params } = builder.buildWhere();
     const orderClause = getOrderByClause(sort);
