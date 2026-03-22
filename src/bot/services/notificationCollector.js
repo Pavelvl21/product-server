@@ -83,18 +83,19 @@ class NotificationCollector {
       
       // Сортируем изменения (повышения сверху, снижения снизу, по убыванию)
 const sortedChanges = [...changes].sort((a, b) => {
-  // Сначала по типу (повышения выше)
+  // Сначала по типу (повышения выше, снижения ниже)
   if (a.isDecrease !== b.isDecrease) {
     return a.isDecrease ? 1 : -1;
   }
-  // Внутри группы: по абсолютному значению изменения
+  
+  // Для повышений: от большего к меньшему
   if (!a.isDecrease) {
-    // Повышения: от большего к меньшему
     return b.change - a.change;
-  } else {
-    // Снижения: от большего к меньшему по модулю (самое сильное снижение внизу)
-    return Math.abs(a.change) - Math.abs(b.change);
   }
+  
+  // Для снижений: от меньшего к большему (по модулю)
+  // То есть -1% должен быть выше, чем -5%
+  return Math.abs(a.change) - Math.abs(b.change);
 });
       
       const message = formatChangesList(sortedChanges, '🔔 ИЗМЕНЕНИЯ В ВАШЕМ МОНИТОРИНГЕ');

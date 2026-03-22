@@ -62,14 +62,15 @@ export function formatChangesList(changes, title = '📊 ИЗМЕНЕНИЯ ЦЕ
     return '📭 Нет изменений цен за сегодня';
   }
   
-  // Сортировка: сначала повышения (от большего к меньшему), затем снижения (от большего к меньшему)
+  // Сортировка: повышения сверху (от большего к меньшему), снижения снизу (от меньшего к большему)
   const sortedChanges = [...changes].sort((a, b) => {
-    // Сначала по типу (повышения выше)
     if (a.isDecrease !== b.isDecrease) {
       return a.isDecrease ? 1 : -1;
     }
-    // Затем по абсолютному значению изменения (от большего к меньшему)
-    return Math.abs(b.change) - Math.abs(a.change);
+    if (!a.isDecrease) {
+      return b.change - a.change;
+    }
+    return Math.abs(a.change) - Math.abs(b.change);
   });
   
   const changesText = sortedChanges.map(change => formatProductFull(change)).join('\n\n────────────────────\n\n');
@@ -77,7 +78,7 @@ export function formatChangesList(changes, title = '📊 ИЗМЕНЕНИЯ ЦЕ
   const increaseCount = sortedChanges.filter(c => !c.isDecrease).length;
   const decreaseCount = sortedChanges.filter(c => c.isDecrease).length;
   
-  const footer = `\n\n────────────────────\n📊 Всего изменений: ${changes.length}\n🔺 Повышение: ${increaseCount}\n🔻 Снижение: ${decreaseCount}`;
+  const footer = `\n\n────────────────────\n📊 Всего изменений: ${changes.length}\n🟢 Повышение: ${increaseCount}\n🔴 Снижение: ${decreaseCount}`;
   
   return `${title}\n\n${changesText}${footer}`;
 }
