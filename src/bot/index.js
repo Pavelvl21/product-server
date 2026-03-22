@@ -200,4 +200,3 @@ export async function sendChatAction(chatId, action = 'typing') {
 // Экспорт для обратной совместимости со старым кодом
 export { handleTelegramUpdate as default };
 export { formatChangesList } from './services/messageFormatter.js';
-export { editMessageText, sendChatAction };
