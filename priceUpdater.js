@@ -1,6 +1,9 @@
 import db from './database.js';
 import { updateCategoryBrandRelations } from './categoryRelations.js';
-import { sendTelegramMessage, formatPriceChangeNotification } from './telegramBot.js';
+
+import { sendTelegramMessage } from './telegramBot.js';
+import { formatPriceChangeNotification } from './src/bot/services/messageFormatter.js';
+
 import { notifyProductSubscribers } from './telegramBroadcast.js';
 
 async function insertPriceRecord(code, name, price, timestamp) {

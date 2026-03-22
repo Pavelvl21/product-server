@@ -1,5 +1,5 @@
+import { handleTelegramUpdate } from '../bot/index.js';
 import db from '../../database.js';
-import { handleTelegramUpdate } from '../../telegramBot.js';
 import Logger from '../services/logger.js';
 
 export async function webhook(req, res, next) {
@@ -16,7 +16,7 @@ export async function getUsers(req, res, next) {
   try {
     const users = await db.execute(`
       SELECT telegram_id, username, first_name, last_name, status, selected_categories,
-             requested_at, approved_at, approved_by, selection_locked
+             requested_at, approved_at, approved_by, selection_locked, user_id
       FROM telegram_users
       ORDER BY requested_at DESC
     `);
