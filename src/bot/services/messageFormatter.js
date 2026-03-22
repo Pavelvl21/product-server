@@ -19,15 +19,13 @@ export function formatProductFull(product) {
   const circleEmoji = product.isDecrease ? '🔴' : '🟢';
   const retailPrice = product.base_price || product.packPrice || null;
   
-  return `
-${circleEmoji} ${product.product_name}
+  return `${circleEmoji} ${product.product_name}
 📋 Код: ${product.product_code}
 💰 Было: ${formatPrice(product.previous_price)} руб.
 💰 Стало: ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change, { withSign: true })} (${product.percent}%)
 💳 РЦ в рассрочку: ${formatPrice(retailPrice)} руб.
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
-🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>
-`;
+🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>`;
 }
 
 export function formatPriceChangeNotification(product, oldPrice, newPrice) {
@@ -50,6 +48,37 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice) {
     category: product.category,
     isDecrease: isDecrease
   });
+}
+
+/**
+ * Форматирует список изменений в одно сообщение
+ * @param {Array} changes - массив изменений
+ * @param {string} title - заголовок сообщения
+ * @returns {string} отформатированное сообщение
+ */
+export function formatChangesList(changes, title = '📊 ИЗМЕНЕНИЯ ЦЕН') {
+  if (!changes || changes.length === 0) {
+    return '📭 Нет изменений цен за сегодня';
+  }
+  
+  // Сортировка: сначала повышения (от большего к меньшему), затем снижения (от большего к меньшему)
+  const sortedChanges = [...changes].sort((a, b) => {
+    // Сначала по типу (повышения выше)
+    if (a.isDecrease !== b.isDecrease) {
+      return a.isDecrease ? 1 : -1;
+    }
+    // Затем по абсолютному значению изменения (от большего к меньшему)
+    return Math.abs(b.change) - Math.abs(a.change);
+  });
+  
+  const changesText = sortedChanges.map(change => formatProductFull(change)).join('\n\n────────────────────\n\n');
+  
+  const increaseCount = sortedChanges.filter(c => !c.isDecrease).length;
+  const decreaseCount = sortedChanges.filter(c => c.isDecrease).length;
+  
+  const footer = `\n\n────────────────────\n📊 Всего изменений: ${changes.length}\n🔺 Повышение: ${increaseCount}\n🔻 Снижение: ${decreaseCount}`;
+  
+  return `${title}\n\n${changesText}${footer}`;
 }
 
 export function formatHelpMessage() {

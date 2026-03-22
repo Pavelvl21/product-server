@@ -1,9 +1,8 @@
 import db from './database.js';
 import { updateCategoryBrandRelations } from './categoryRelations.js';
-
-import { sendTelegramMessage } from './src/bot/index.js';
+import { sendTelegramMessage } from './telegramBot.js';
 import { formatPriceChangeNotification } from './src/bot/services/messageFormatter.js';
-import { notifyProductSubscribers } from './telegramBroadcast.js';
+import { notificationCollector } from './src/services/notificationCollector.js';
 
 async function insertPriceRecord(code, name, price, timestamp) {
   await db.execute({
@@ -31,7 +30,6 @@ async function saveProductData(product, timestamp) {
   }
   const brand = product.producerName || 'Без бренда';
 
-  // 📊 Статистика по этой операции
   const stats = {
     priceChanged: false,
     priceInserted: false,
@@ -65,39 +63,55 @@ async function saveProductData(product, timestamp) {
       packPrice
     };
 
-    // Проверяем, есть ли товар в мониторинге
+    // Проверяем, есть ли товар в мониторинге и получаем подписчиков
     const monitoringCheck = await db.execute({
-      sql: 'SELECT 1 FROM user_shelf WHERE product_code = ? LIMIT 1',
+      sql: `SELECT us.user_id, tu.chat_id 
+            FROM user_shelf us 
+            LEFT JOIN telegram_users tu ON us.user_id = tu.user_id 
+            WHERE us.product_code = ? AND tu.chat_id IS NOT NULL`,
       args: [code]
     });
     
     const isMonitored = monitoringCheck.rows.length > 0;
 
-    // ☑️ Проверяем, изменилась ли цена
+    // Проверяем, изменилась ли цена
     const priceChanged = lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01;
     stats.priceChanged = priceChanged;
 
-    // ☑️ Решаем, нужно ли вставлять в историю
     const shouldInsertPrice = priceChanged || lastPrice === undefined;
     
     if (shouldInsertPrice) {
       await insertPriceRecord(code, product.name, realPrice, now);
       stats.priceInserted = true;
       
+      // Если цена изменилась и товар в мониторинге, добавляем уведомление в коллектор
       if (priceChanged && isMonitored) {
-        const notification = formatPriceChangeNotification(
-          productWithPrices, 
-          lastPrice, 
-          realPrice
-        );
+        const notification = {
+          product_code: code,
+          product_name: product.name,
+          current_price: realPrice,
+          previous_price: lastPrice,
+          change: realPrice - lastPrice,
+          percent: ((realPrice - lastPrice) / lastPrice * 100).toFixed(1),
+          base_price: basePrice,
+          packPrice: packPrice,
+          monthly_payment: monthly_payment,
+          no_overpayment_max_months: no_overpayment_max_months,
+          link: product.link || '',
+          category: category,
+          isDecrease: realPrice < lastPrice
+        };
         
-        await notifyProductSubscribers(
-          code,
-          productWithPrices,
-          lastPrice,
-          realPrice,
-          formatPriceChangeNotification
-        );
+        // Для каждого подписчика добавляем уведомление
+        for (const subscriber of monitoringCheck.rows) {
+          if (subscriber.chat_id) {
+            notificationCollector.addNotification(
+              subscriber.user_id,
+              subscriber.chat_id,
+              notification
+            );
+          }
+        }
       }
     }
 
@@ -143,10 +157,6 @@ async function saveProductData(product, timestamp) {
     });
     stats.productUpdated = true;
 
-    // Обновляем связи категорий
-    // await updateCategoryBrandRelations(category, brand);
-    // stats.categoryUpdated = true;
-
     return stats;
 
   } catch (error) {
@@ -156,6 +166,11 @@ async function saveProductData(product, timestamp) {
 }
 
 export async function updatePricesForNewCode(code) {
+  // Начинаем сессию, если еще не начата
+  if (!notificationCollector.isUpdateInProgress()) {
+    notificationCollector.startUpdate();
+  }
+  
   try {
     const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
       headers: {
@@ -217,6 +232,9 @@ export async function updatePricesForNewCode(code) {
 export async function updateAllPrices() {
   const startTime = Date.now();
   console.log(`\n🚀 Запуск планового обновления цен: ${new Date().toLocaleString('ru-RU')}`);
+  
+  // Начинаем сессию сбора уведомлений
+  notificationCollector.startUpdate();
 
   // 📊 СЧЁТЧИКИ ДЛЯ ДИАГНОСТИКИ
   let totalProcessed = 0;
@@ -232,6 +250,7 @@ export async function updateAllPrices() {
     
     if (allCodes.length === 0) {
       console.log('📭 Нет кодов для обновления');
+      notificationCollector.finishUpdate();
       return;
     }
 
@@ -274,11 +293,11 @@ export async function updateAllPrices() {
             method: "POST"
           });
 
-if (!response.ok) {
-  console.log(`❌ ТОВАР ${code} НЕ ОБНОВЛЁН! Статус: ${response.status}`);
-  batchErrors++;
-  continue;
-}
+          if (!response.ok) {
+            console.log(`❌ ТОВАР ${code} НЕ ОБНОВЛЁН! Статус: ${response.status}`);
+            batchErrors++;
+            continue;
+          }
 
           const data = await response.json();
           const product = data.data.productCards[0];
@@ -342,7 +361,6 @@ if (!response.ok) {
       console.log(`   - Цена изменилась у: ${batchPriceChanges} товаров`);
       console.log(`   - Сделано INSERT в price_history: ${batchPriceInserts}`);
       console.log(`   - Сделано UPDATE products_info: ${batchProductUpdates}`);
-      console.log(`   - Сделано операций с category_brand_relations: ${batchCategoryUpdates}`);
 
       return { 
         processed: batchProcessed, 
@@ -381,11 +399,16 @@ if (!response.ok) {
     console.log(`   - Цена изменилась у: ${totalPriceChanges} товаров`);
     console.log(`   - INSERT в price_history: ${totalPriceInserts}`);
     console.log(`   - UPDATE products_info: ${totalProductUpdates}`);
-    console.log(`   - Операции с category_brand_relations: ${totalCategoryUpdates}`);
-    console.log(`   - ВСЕГО ОПЕРАЦИЙ ЗАПИСИ: ${totalPriceInserts + totalProductUpdates + totalCategoryUpdates}`);
+    console.log(`   - ВСЕГО ОПЕРАЦИЙ ЗАПИСИ: ${totalPriceInserts + totalProductUpdates}`);
+
+    // Завершаем сессию и отправляем все накопленные уведомления
+    notificationCollector.finishUpdate();
 
   } catch (error) {
     console.error('\n❌ КРИТИЧЕСКАЯ ОШИБКА ПРИ ОБНОВЛЕНИИ ЦЕН:', error.message);
+    
+    // Даже при ошибке отправляем накопленные уведомления
+    notificationCollector.finishUpdate();
     
     await sendTelegramMessage(`
 ⚠️ Критическая ошибка при массовом обновлении

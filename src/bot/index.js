@@ -143,3 +143,4 @@ export async function handleTelegramUpdate(update) {
 
 // Экспорт для обратной совместимости со старым кодом
 export { handleTelegramUpdate as default };
+export { formatChangesList } from './services/messageFormatter.js';

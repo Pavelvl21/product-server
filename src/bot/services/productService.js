@@ -42,10 +42,14 @@ export async function getPriceChanges() {
         isDecrease: p.priceToday < p.priceYesterday
       }));
     
+    // Сортировка: сначала повышения (от большего к меньшему), затем снижения (от большего к меньшему)
     changes.sort((a, b) => {
-      if (!a.isDecrease && !b.isDecrease) return b.change - a.change;
-      if (a.isDecrease && b.isDecrease) return a.change - b.change;
-      return a.isDecrease ? 1 : -1;
+      // Сначала по типу (повышения выше)
+      if (a.isDecrease !== b.isDecrease) {
+        return a.isDecrease ? 1 : -1;
+      }
+      // Затем по абсолютному значению изменения
+      return Math.abs(b.change) - Math.abs(a.change);
     });
     
     return changes;
