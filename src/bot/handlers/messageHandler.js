@@ -1,26 +1,18 @@
-import { config } from "../../../src/config/env.js";
-import { sendMessage } from "../index.js";
-import { checkRateLimit } from "../services/rateLimiter.js";
-import {
-  getUser,
-  createUser,
-  updateUserStatus,
-  lockUserSelection,
-  getUserMonitoringProducts,
-} from "../services/userService.js";
-import {
-  getProductsFromServer,
-  getPriceChanges,
-} from "../services/productService.js";
-import {
-  formatHelpMessage,
-  formatStatusMessage,
-  formatProductFull,
-} from "../services/messageFormatter.js";
-import { showCategoryList } from "./callbackHandler.js";
-import { notifyAdminAboutNewUser } from "./adminHandler.js";
-import Logger from "../../../src/services/logger.js";
+import { config } from '../../../src/config/env.js';
+import { sendMessage } from '../index.js';
+import { checkRateLimit } from '../services/rateLimiter.js';
+import { 
+  getUser, createUser, updateUserStatus, lockUserSelection,
+  getUserMonitoringProducts 
+} from '../services/userService.js';
+import { getProductsFromServer, getPriceChanges } from '../services/productService.js';
+import { formatHelpMessage, formatStatusMessage, formatProductFull, formatChangesList } from '../services/messageFormatter.js';
+import { showCategoryList } from './callbackHandler.js';
+import { notifyAdminAboutNewUser } from './adminHandler.js';
+import Logger from '../../../src/services/logger.js';
+
 const ADMIN_CHAT_ID = config.TELEGRAM_CHAT_ID;
+
 export async function handleMessage(message) {
   const chatId = message.chat.id;
   const userId = message.from.id;
