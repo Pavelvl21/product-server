@@ -82,12 +82,20 @@ class NotificationCollector {
       if (changes.length === 0) continue;
       
       // Сортируем изменения (повышения сверху, снижения снизу, по убыванию)
-      const sortedChanges = [...changes].sort((a, b) => {
-        if (a.isDecrease !== b.isDecrease) {
-          return a.isDecrease ? 1 : -1;
-        }
-        return Math.abs(b.change) - Math.abs(a.change);
-      });
+const sortedChanges = [...changes].sort((a, b) => {
+  // Сначала по типу (повышения выше)
+  if (a.isDecrease !== b.isDecrease) {
+    return a.isDecrease ? 1 : -1;
+  }
+  // Внутри группы: по абсолютному значению изменения
+  if (!a.isDecrease) {
+    // Повышения: от большего к меньшему
+    return b.change - a.change;
+  } else {
+    // Снижения: от большего к меньшему по модулю (самое сильное снижение внизу)
+    return Math.abs(a.change) - Math.abs(b.change);
+  }
+});
       
       const message = formatChangesList(sortedChanges, '🔔 ИЗМЕНЕНИЯ В ВАШЕМ МОНИТОРИНГЕ');
       

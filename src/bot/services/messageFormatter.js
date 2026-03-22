@@ -16,13 +16,14 @@ export function formatPrice(price, options = {}) {
 }
 
 export function formatProductFull(product) {
-  const circleEmoji = product.isDecrease ? '🔴' : '🟢';
+  const emoji = product.isDecrease ? '🔴' : '🟢';
+  
   const retailPrice = product.base_price || product.packPrice || null;
   
-  return `${circleEmoji} ${product.product_name}
+  return `${emoji} ${product.product_name}
 📋 Код: ${product.product_code}
 💰 Было: ${formatPrice(product.previous_price)} руб.
-💰 Стало: ${formatPrice(product.current_price)} руб. ${circleEmoji} ${formatPrice(product.change, { withSign: true })} (${product.percent}%)
+💰 Стало: ${formatPrice(product.current_price)} руб. ${emoji} ${formatPrice(product.change, { withSign: true })} (${product.percent}%)
 💳 РЦ в рассрочку: ${formatPrice(retailPrice)} руб.
 ⏱ Срок: ${product.no_overpayment_max_months || '—'} мес.
 🔗 <a href="https://www.21vek.by${product.link}">Ссылка</a>`;
