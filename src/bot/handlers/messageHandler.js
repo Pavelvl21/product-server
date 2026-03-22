@@ -1,5 +1,5 @@
 import { config } from '../../../src/config/env.js';
-import { sendMessage } from '../index.js';
+import { sendMessage, editMessageText } from '../index.js';  // ← добавили editMessageText
 import { checkRateLimit } from '../services/rateLimiter.js';
 import { 
   getUser, createUser, updateUserStatus, lockUserSelection,
