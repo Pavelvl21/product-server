@@ -5,9 +5,7 @@
   "description": "Product data server on Koyeb with Turso and authentication",
   "main": "server.js",
   "scripts": {
-    "start": "serve -s build -l 3000",
-    "build": "react-scripts build",
-    "dev": "react-scripts start"
+    "start": "node server.js"
   },
   "dependencies": {
     "@libsql/client": "^0.14.0",
