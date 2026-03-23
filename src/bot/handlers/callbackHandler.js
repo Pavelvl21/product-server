@@ -113,7 +113,6 @@ export async function handleCallback(query) {
         '✅ <b>Выбор завершён!</b>\n\n' +
         selected.map(c => `• ${c}`).join('\n') + `\n\n` +
         'Теперь вам доступны команды:\n' +
-        '/goods - список товаров\n' +
         '/changes - изменения цен'
       );
 

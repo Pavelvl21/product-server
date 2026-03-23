@@ -41,7 +41,6 @@ export async function sendMessage(chatId, text, options = {}) {
       return false;
     }
     
-    // Возвращаем полный объект сообщения
     return result.result;
   } catch (err) {
     Logger.error('Ошибка отправки сообщения', err, { chatId });
@@ -147,12 +146,7 @@ export async function handleTelegramUpdate(update) {
  * @returns {Promise<object|boolean>}
  */
 export async function editMessageText(chatId, messageId, text, options = {}) {
-  if (!BOT_TOKEN) {
-    Logger.error('editMessageText: BOT_TOKEN не задан');
-    return false;
-  }
-  
-  Logger.debug('editMessageText вызван', { chatId, messageId, textLength: text?.length });
+  if (!BOT_TOKEN) return false;
   
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`;
@@ -177,8 +171,6 @@ export async function editMessageText(chatId, messageId, text, options = {}) {
         chatId,
         messageId
       });
-    } else {
-      Logger.debug('editMessageText: успешно', { chatId, messageId });
     }
     
     return result;

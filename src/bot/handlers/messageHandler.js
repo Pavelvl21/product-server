@@ -85,54 +85,7 @@ export async function handleMessage(message) {
       await sendMessage(chatId, formatStatusMessage(user));
       return;
     }
-// /goods
-if (text === '/goods') {
-  if (!checkRateLimit(userId, '/goods')) return;
 
-  const monitoringCodes = await getUserMonitoringProducts(userId);
-  
-  if (monitoringCodes.length === 0) {
-    await sendMessage(chatId, '📭 У вас нет товаров в мониторинге');
-    return;
-  }
-
-  // Отправляем временное сообщение о загрузке
-  const loadingMsg = await sendMessage(chatId, '⏳ Загружаю список товаров...');
-  Logger.debug('Получен loadingMsg', { messageId: loadingMsg?.message_id });
-
-  try {
-    const data = await getProductsFromServer();
-    if (!data?.products) {
-      await editMessageText(chatId, loadingMsg.message_id, '❌ Не удалось получить список товаров');
-      return;
-    }
-
-    const monitoringProducts = data.products.filter(p => monitoringCodes.includes(p.code));
-
-    if (!monitoringProducts.length) {
-      await editMessageText(chatId, loadingMsg.message_id, '📭 В вашем мониторинге нет товаров');
-      return;
-    }
-
-    // Формируем список товаров
-    let message = `📦 В вашем мониторинге: ${monitoringProducts.length} товаров.\n\n`;
-    const batchSize = 50;
-    
-    for (let i = 0; i < monitoringProducts.length; i += batchSize) {
-      const batch = monitoringProducts.slice(i, i + batchSize);
-      const list = batch.map(p => `• ${p.name}`).join('\n');
-      message += `📋 Часть ${Math.floor(i/batchSize) + 1}/${Math.ceil(monitoringProducts.length/batchSize)}:\n\n${list}\n\n`;
-    }
-    
-    await editMessageText(chatId, loadingMsg.message_id, message);
-    
-  } catch (err) {
-    Logger.error('Ошибка при получении товаров', err, { userId });
-    await editMessageText(chatId, loadingMsg.message_id, '❌ Произошла ошибка при загрузке списка товаров');
-  }
-  
-  return;
-}
 
 // /changes
 if (text === '/changes') {
@@ -145,29 +98,23 @@ if (text === '/changes') {
     return;
   }
 
-  // Отправляем временное сообщение о загрузке
-  Logger.debug('Отправляем сообщение о загрузке', { userId });
   const loadingMsg = await sendMessage(chatId, '⏳ Загружаю изменения цен...');
-  Logger.debug('Получен loadingMsg', { messageId: loadingMsg?.message_id });
+  
+  if (!loadingMsg || !loadingMsg.message_id) {
+    return;
+  }
   
   try {
-    Logger.debug('Начинаем загрузку изменений цен', { userId });
     const allChanges = await getPriceChanges();
-    Logger.debug('Получены изменения', { count: allChanges?.length });
-    
     const changes = allChanges.filter(c => monitoringCodes.includes(c.product_code));
-    Logger.debug('Отфильтровано по мониторингу', { count: changes.length });
 
     if (!changes.length) {
-      Logger.debug('Нет изменений, отправляем сообщение');
       await editMessageText(chatId, loadingMsg.message_id, '📭 Сегодня нет изменений по вашим товарам');
       return;
     }
 
     const message = formatChangesList(changes, '📊 ИЗМЕНЕНИЯ ЦЕН В МОНИТОРИНГЕ');
-    Logger.debug('Форматировано сообщение', { length: message.length });
     await editMessageText(chatId, loadingMsg.message_id, message);
-    Logger.debug('Сообщение успешно обновлено');
     
   } catch (err) {
     Logger.error('Ошибка при получении изменений', err, { userId });
