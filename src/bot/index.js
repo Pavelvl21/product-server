@@ -150,7 +150,12 @@ export async function handleTelegramUpdate(update) {
  * @returns {Promise<object|boolean>}
  */
 export async function editMessageText(chatId, messageId, text, options = {}) {
-  if (!BOT_TOKEN) return false;
+  if (!BOT_TOKEN) {
+    Logger.error('editMessageText: BOT_TOKEN не задан');
+    return false;
+  }
+  
+  Logger.debug('editMessageText вызван', { chatId, messageId, textLength: text?.length });
   
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`;
@@ -167,9 +172,21 @@ export async function editMessageText(chatId, messageId, text, options = {}) {
       })
     });
     
-    return await response.json();
+    const result = await response.json();
+    
+    if (!result.ok) {
+      Logger.error('editMessageText: Telegram API ошибка', null, { 
+        description: result.description,
+        chatId,
+        messageId
+      });
+    } else {
+      Logger.debug('editMessageText: успешно', { chatId, messageId });
+    }
+    
+    return result;
   } catch (err) {
-    Logger.error('Ошибка редактирования сообщения', err, { chatId, messageId });
+    Logger.error('editMessageText: ошибка fetch', err, { chatId, messageId });
     return false;
   }
 }

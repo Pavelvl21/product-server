@@ -132,6 +132,7 @@ if (text === '/goods') {
   
   return;
 }
+
 // /changes
 if (text === '/changes') {
   if (!checkRateLimit(userId, '/changes')) return;
@@ -144,21 +145,28 @@ if (text === '/changes') {
   }
 
   // Отправляем временное сообщение о загрузке
+  Logger.debug('Отправляем сообщение о загрузке', { userId });
   const loadingMsg = await sendMessage(chatId, '⏳ Загружаю изменения цен...');
+  Logger.debug('Получен loadingMsg', { messageId: loadingMsg?.message_id });
   
   try {
+    Logger.debug('Начинаем загрузку изменений цен', { userId });
     const allChanges = await getPriceChanges();
+    Logger.debug('Получены изменения', { count: allChanges?.length });
+    
     const changes = allChanges.filter(c => monitoringCodes.includes(c.product_code));
+    Logger.debug('Отфильтровано по мониторингу', { count: changes.length });
 
     if (!changes.length) {
-      // Редактируем сообщение
+      Logger.debug('Нет изменений, отправляем сообщение');
       await editMessageText(chatId, loadingMsg.message_id, '📭 Сегодня нет изменений по вашим товарам');
       return;
     }
 
-    // Форматируем все изменения в одно сообщение
     const message = formatChangesList(changes, '📊 ИЗМЕНЕНИЯ ЦЕН В МОНИТОРИНГЕ');
+    Logger.debug('Форматировано сообщение', { length: message.length });
     await editMessageText(chatId, loadingMsg.message_id, message);
+    Logger.debug('Сообщение успешно обновлено');
     
   } catch (err) {
     Logger.error('Ошибка при получении изменений', err, { userId });
@@ -167,6 +175,7 @@ if (text === '/changes') {
   
   return;
 }
+
     // /help
     if (text === "/help") {
       await sendMessage(chatId, formatHelpMessage());
