@@ -25,7 +25,6 @@ router.post('/api/register', authLimiter, validate(schemas.register), authContro
 router.post('/api/login', authLimiter, authController.login);
 
 // ==================== ТОВАРЫ (требуют аутентификации) ====================
-router.get('/api/products', authenticateToken, productController.getProductsLegacy);
 router.get('/api/products', authenticateToken, productController.getProducts);
 router.get('/api/products/paginated', authenticateToken, productController.getPaginatedProducts);
 router.get('/api/products/catalog', authenticateToken, productController.getCatalogProducts);
