@@ -76,6 +76,99 @@ export async function getProducts(req, res, next) {
     next(err);
   }
 }
+export async function getCatalogProducts(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || CONSTANTS.DEFAULT_PAGE_SIZE;
+    const offset = parseInt(req.query.offset) || 0;
+    const categories = req.query.categories ? 
+      (Array.isArray(req.query.categories) ? req.query.categories : [req.query.categories]) : [];
+    const brands = req.query.brands ? 
+      (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
+    const search = req.query.search;
+    const sort = req.query.sort || 'default';
+    
+    const builder = new SafeQueryBuilder();
+    
+    builder.addInCondition('p.category', categories);
+    builder.addInCondition('p.brand', brands);
+    if (search && search.trim() !== '') {
+      const searchLower = search.toLowerCase().trim();
+      builder.addCondition(`(p.name_lower LIKE ? OR p.code LIKE ?)`, `%${searchLower}%`, `%${search}%`);
+    }
+    
+    // Ключевое отличие: исключаем товары, которые уже в избранном пользователя
+    builder.addCondition(`p.code NOT IN (SELECT product_code FROM user_shelf WHERE user_id = ?)`, userId);
+    
+    const { whereClause, params } = builder.buildWhere();
+    const orderClause = getOrderByClause(sort);
+    
+    const products = await db.execute({
+      sql: `
+        SELECT 
+          p.*,
+          0 as inMonitoring
+        FROM products_info p
+        ${whereClause}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `,
+      args: [...params, limit, offset]
+    });
+    
+    // Общее количество для пагинации (без учёта LIMIT)
+    const countResult = await db.execute({
+      sql: `SELECT COUNT(*) as count FROM products_info p ${whereClause}`,
+      args: params
+    });
+    
+    // Общее количество товаров в системе (для Header)
+    const totalProductsCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
+    
+    if (products.rows.length > 0) {
+      const codes = products.rows.map(p => p.code);
+      const placeholders = codes.map(() => '?').join(',');
+      
+      const history = await db.execute({
+        sql: `
+          SELECT product_code, price, updated_at
+          FROM price_history
+          WHERE product_code IN (${placeholders})
+          ORDER BY product_code, updated_at ASC
+        `,
+        args: codes
+      });
+      
+      const historyByProduct = {};
+      history.rows.forEach(row => {
+        if (!historyByProduct[row.product_code]) {
+          historyByProduct[row.product_code] = [];
+        }
+        historyByProduct[row.product_code].push({
+          date: row.updated_at,
+          price: row.price
+        });
+      });
+      
+      products.rows = products.rows.map(p => ({
+        ...p,
+        priceHistory: historyByProduct[p.code] || [],
+        currentPrice: p.last_price ? parseFloat(p.last_price) : null
+      }));
+    }
+    
+    res.json({
+      products: products.rows,
+      total: countResult.rows[0].count,
+      totalProducts: totalProductsCount.rows[0].count,
+      hasMore: offset + limit < countResult.rows[0].count
+    });
+    
+  } catch (err) {
+    Logger.error('Ошибка в getCatalogProducts', err);
+    next(err);
+  }
+}
 
 export async function getPaginatedProducts(req, res, next) {
   try {
