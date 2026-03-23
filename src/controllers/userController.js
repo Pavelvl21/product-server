@@ -281,6 +281,7 @@ export async function getShelfPaginated(req, res, next) {
     res.json({
       products: products.rows,
       total: countResult.rows[0].count,
+      totalProducts: totalProductsCount.rows[0].count,
       hasMore: offset + limit < countResult.rows[0].count
     });
     
