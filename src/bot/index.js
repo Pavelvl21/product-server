@@ -20,11 +20,7 @@ if (!BOT_TOKEN) {
  * @returns {Promise<object|boolean>}
  */
 export async function sendMessage(chatId, text, options = {}) {
-  if (!BOT_TOKEN) {
-    Logger.error('Невозможно отправить сообщение: BOT_TOKEN не задан');
-    return false;
-  }
-  
+  if (!BOT_TOKEN) return false;
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
     const response = await fetch(url, {
@@ -38,14 +34,15 @@ export async function sendMessage(chatId, text, options = {}) {
         ...options
       })
     });
-    
     const result = await response.json();
     
     if (!result.ok) {
       Logger.error('Telegram API ошибка', null, { description: result.description });
+      return false;
     }
     
-    return result;
+    // Возвращаем полный объект сообщения
+    return result.result;
   } catch (err) {
     Logger.error('Ошибка отправки сообщения', err, { chatId });
     return false;

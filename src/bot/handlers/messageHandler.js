@@ -98,6 +98,7 @@ if (text === '/goods') {
 
   // Отправляем временное сообщение о загрузке
   const loadingMsg = await sendMessage(chatId, '⏳ Загружаю список товаров...');
+  Logger.debug('Получен loadingMsg', { messageId: loadingMsg?.message_id });
 
   try {
     const data = await getProductsFromServer();
