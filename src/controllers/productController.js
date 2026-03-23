@@ -93,8 +93,6 @@ export async function getPaginatedProducts(req, res, next) {
     
     builder.addInCondition('p.category', categories);
     builder.addInCondition('p.brand', brands);
-    
-    // Исправление: поиск по OR (как в оригинале)
     if (search && search.trim() !== '') {
       const searchLower = search.toLowerCase().trim();
       builder.addCondition(`(p.name_lower LIKE ? OR p.code LIKE ?)`, `%${searchLower}%`, `%${search}%`);
@@ -123,6 +121,9 @@ export async function getPaginatedProducts(req, res, next) {
       sql: `SELECT COUNT(*) as count FROM products_info p ${whereClause}`,
       args: params
     });
+    
+    // ✅ Общее количество товаров в системе
+    const totalProductsCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
     
     if (products.rows.length > 0) {
       const codes = products.rows.map(p => p.code);

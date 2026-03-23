@@ -205,11 +205,25 @@ export async function getShelfPaginated(req, res, next) {
     builder.addCondition('us.user_id = ?', userId);
     builder.addInCondition('p.category', categories);
     builder.addInCondition('p.brand', brands);
-    builder.addLikeCondition('p.name_lower', search);
-    builder.addLikeCondition('p.code', search);
+    if (search && search.trim() !== '') {
+      const searchLower = search.toLowerCase().trim();
+      builder.addCondition(`(p.name_lower LIKE ? OR p.code LIKE ?)`, `%${searchLower}%`, `%${search}%`);
+    }
     
     const { whereClause, params } = builder.buildWhere();
-    const orderClause = getOrderByClause(sort).replace('p.', '');
+    
+    let orderClause = '';
+    if (sort === 'price_asc') {
+      orderClause = 'ORDER BY CAST(p.last_price AS REAL) ASC, p.code';
+    } else if (sort === 'price_desc') {
+      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code';
+    } else if (sort === 'name_asc') {
+      orderClause = 'ORDER BY p.name_lower ASC, p.code';
+    } else if (sort === 'name_desc') {
+      orderClause = 'ORDER BY p.name_lower DESC, p.code';
+    } else {
+      orderClause = 'ORDER BY us.added_at DESC, p.code';
+    }
     
     const products = await db.execute({
       sql: `
@@ -245,6 +259,9 @@ export async function getShelfPaginated(req, res, next) {
       `,
       args: params
     });
+    
+    // ✅ Общее количество товаров в системе
+    const totalProductsCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
     
     if (products.rows.length > 0) {
       const codes = products.rows.map(p => p.code);
