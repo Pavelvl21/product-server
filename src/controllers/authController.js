@@ -35,6 +35,24 @@ export async function register(req, res, next) {
       });
     }
     
+    // Проверяем, существует ли пользователь
+    const existingUser = await db.execute({
+      sql: 'SELECT id FROM users WHERE username = ?',
+      args: [sanitizedUsername]
+    });
+    
+    if (existingUser.rows.length > 0) {
+      // Пользователь уже есть (создан через бота), обновляем пароль
+      const hash = await bcrypt.hash(password, 10);
+      await db.execute({
+        sql: 'UPDATE users SET password_hash = ? WHERE username = ?',
+        args: [hash, sanitizedUsername]
+      });
+      
+      return res.status(200).json({ message: 'Пароль успешно установлен. Теперь вы можете войти.' });
+    }
+    
+    // Новый пользователь
     const hash = await bcrypt.hash(password, 10);
     
     await db.execute({
@@ -59,8 +77,7 @@ export async function login(req, res, next) {
     const { username, password } = req.body;
     
     const result = await db.execute({
-      sql: `SELECT id, username, password_hash, temp_password, temp_password_expires 
-            FROM users WHERE username = ?`,
+      sql: 'SELECT id, username, password_hash FROM users WHERE username = ?',
       args: [username]
     });
     
@@ -69,23 +86,12 @@ export async function login(req, res, next) {
       return res.status(401).json({ error: 'Неверный email или пароль' });
     }
     
-    let isValid = await bcrypt.compare(password, user.password_hash);
-    let isTempPassword = false;
-    
-    if (!isValid && user.temp_password) {
-      isValid = password === user.temp_password;
-      if (isValid) {
-        const expiresAt = new Date(user.temp_password_expires);
-        const now = new Date();
-        
-        if (now > expiresAt) {
-          return res.status(401).json({ 
-            error: 'Временный пароль истек. Запросите новый пароль у администратора.' 
-          });
-        }
-        isTempPassword = true;
-      }
+    // Проверяем, что пароль не пустой
+    if (!user.password_hash || user.password_hash === '') {
+      return res.status(401).json({ error: 'Пароль не установлен. Завершите регистрацию по ссылке из письма.' });
     }
+    
+    const isValid = await bcrypt.compare(password, user.password_hash);
     
     if (!isValid) {
       return res.status(401).json({ error: 'Неверный email или пароль' });
@@ -97,11 +103,7 @@ export async function login(req, res, next) {
       { expiresIn: '7d' }
     );
     
-    res.json({ 
-      token,
-      isTempPassword,
-      message: isTempPassword ? 'Используется временный пароль. Рекомендуем сменить его.' : null
-    });
+    res.json({ token });
     
   } catch (err) {
     Logger.error('Ошибка входа', err, { username: req.body?.username });
@@ -115,8 +117,7 @@ export async function changePassword(req, res, next) {
     const { currentPassword, newPassword } = req.validatedBody;
     
     const user = await db.execute({
-      sql: `SELECT username, password_hash, temp_password, temp_password_expires 
-            FROM users WHERE id = ?`,
+      sql: `SELECT username, password_hash FROM users WHERE id = ?`,
       args: [userId]
     });
     
@@ -135,19 +136,7 @@ export async function changePassword(req, res, next) {
       });
     }
     
-    let isValid = await bcrypt.compare(currentPassword, user.rows[0].password_hash);
-    
-    if (!isValid && user.rows[0].temp_password) {
-      isValid = currentPassword === user.rows[0].temp_password;
-      if (isValid) {
-        const expiresAt = new Date(user.rows[0].temp_password_expires);
-        const now = new Date();
-        
-        if (now > expiresAt) {
-          return res.status(401).json({ error: 'Временный пароль истек' });
-        }
-      }
-    }
+    const isValid = await bcrypt.compare(currentPassword, user.rows[0].password_hash);
     
     if (!isValid) {
       return res.status(401).json({ error: 'Неверный текущий пароль' });
@@ -161,11 +150,7 @@ export async function changePassword(req, res, next) {
     const hash = await bcrypt.hash(newPassword, 10);
     
     await db.execute({
-      sql: `UPDATE users 
-            SET password_hash = ?, 
-                temp_password = NULL, 
-                temp_password_expires = NULL 
-            WHERE id = ?`,
+      sql: 'UPDATE users SET password_hash = ? WHERE id = ?',
       args: [hash, userId]
     });
     

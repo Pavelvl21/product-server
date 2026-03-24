@@ -17,7 +17,6 @@ export function formatPrice(price, options = {}) {
 
 export function formatProductFull(product) {
   const emoji = product.isDecrease ? '🔴' : '🟢';
-  
   const retailPrice = product.base_price || product.packPrice || null;
   
   return `${emoji} ${product.product_name}
@@ -51,18 +50,11 @@ export function formatPriceChangeNotification(product, oldPrice, newPrice) {
   });
 }
 
-/**
- * Форматирует список изменений в одно сообщение
- * @param {Array} changes - массив изменений
- * @param {string} title - заголовок сообщения
- * @returns {string} отформатированное сообщение
- */
 export function formatChangesList(changes, title = '📊 ИЗМЕНЕНИЯ ЦЕН') {
   if (!changes || changes.length === 0) {
     return '📭 Нет изменений цен за сегодня';
   }
   
-  // Сортировка: повышения сверху (от большего к меньшему), снижения снизу (от меньшего к большему)
   const sortedChanges = [...changes].sort((a, b) => {
     if (a.isDecrease !== b.isDecrease) {
       return a.isDecrease ? 1 : -1;
@@ -90,10 +82,10 @@ export function formatHelpMessage() {
 👤 <b>Для всех:</b>
 /help - это сообщение
 /start - начало работы
-/status - статус и категории
+/status - статус
 /changes - изменения цен за сегодня (только по вашему мониторингу)
 
-ℹ️ Категории выбираются один раз при регистрации.
+ℹ️ Все товары в избранном отслеживаются автоматически. Вы можете выбрать категории, но это не обязательно.
 `;
 }
 
@@ -102,7 +94,7 @@ export function formatStatusMessage(user) {
   const categories = user.selected_categories || [];
   const catText = categories.length 
     ? `\n📁 Категории:\n${categories.map(c => `• ${c}`).join('\n')}` 
-    : '\n📁 Категории не выбраны';
+    : '\n📁 Категории не выбраны (уведомления приходят по всем товарам)';
   
   return `✅ Статус: подтверждён\n🔒 Выбор категорий: ${locked}${catText}`;
 }
