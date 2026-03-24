@@ -2,15 +2,17 @@ import { config } from '../../../src/config/env.js';
 import { sendMessage, editMessageText } from '../index.js';
 import { checkRateLimit } from '../services/rateLimiter.js';
 import { 
-  getUser, createUser, updateUserEmail, updateUserStatus, lockUserSelection,
-  getUserMonitoringProducts, addToAllowedEmails
+  getUser, createUser, updateUserEmail, updateUserStatus,
+  getUserMonitoringProducts
 } from '../services/userService.js';
 import { getProductsFromServer, getPriceChanges } from '../services/productService.js';
-import { formatHelpMessage, formatStatusMessage, formatProductFull, formatChangesList } from '../services/messageFormatter.js';
-import { showCategoryList } from './callbackHandler.js';
+import { formatHelpMessage, formatStatusMessage, formatChangesList } from '../services/messageFormatter.js';
 import Logger from '../../../src/services/logger.js';
 
 const ADMIN_CHAT_ID = config.TELEGRAM_CHAT_ID;
+
+// Хранилище состояний пользователей
+const userState = new Map(); // userId -> { state: 'awaiting_email' }
 
 export async function handleMessage(message) {
   const chatId = message.chat.id;
@@ -23,29 +25,30 @@ export async function handleMessage(message) {
   try {
     const user = await getUser(userId);
 
-    // Скрытая команда для проверки админства
+    // ==================== СКРЫТАЯ КОМАНДА ДЛЯ АДМИНА ====================
     if (text === '/isAdmin') {
       const isAdmin = (userId == ADMIN_CHAT_ID);
       await sendMessage(chatId, isAdmin ? '✅ Да' : '❌ Нет');
       return;
     }
 
-    // Обработка команды /email
-    if (text && text.startsWith('/email ')) {
-      const email = text.replace('/email ', '').trim().toLowerCase();
+    // ==================== ОБРАБОТКА ВВОДА EMAIL (после /start) ====================
+    const state = userState.get(userId);
+    if (state && state.state === 'awaiting_email' && text && !text.startsWith('/')) {
+      const email = text.trim().toLowerCase();
       
       const emailRegex = /^[^\s@]+@([^\s@]+)$/;
       const match = email.match(emailRegex);
       
       if (!match) {
-        await sendMessage(chatId, '❌ Неверный формат email');
+        await sendMessage(chatId, '❌ Неверный формат email. Попробуйте еще раз:\n\nНапример: <code>ivan@patio-minsk.by</code>');
         return;
       }
       
       const domain = match[1];
       
       if (domain !== 'patio-minsk.by') {
-        await sendMessage(chatId, '❌ Разрешены только email с доменом @patio-minsk.by');
+        await sendMessage(chatId, '❌ Разрешены только email с доменом @patio-minsk.by. Попробуйте еще раз:\n\nНапример: <code>ivan@patio-minsk.by</code>');
         return;
       }
       
@@ -55,7 +58,7 @@ export async function handleMessage(message) {
       // Кодируем email для callback_data (убираем проблемные символы)
       const encodedEmail = Buffer.from(email).toString('base64').replace(/[+/=]/g, '');
       
-      // Отправляем уведомление админу
+      // Получаем информацию о пользователе
       const userInfo = await getUser(userId);
       const info = [
         `🆔 ID: <code>${userId}</code>`,
@@ -77,57 +80,63 @@ export async function handleMessage(message) {
       });
       
       await sendMessage(chatId, '✅ Email сохранен. Ожидайте подтверждения администратора.');
+      
+      // Очищаем состояние
+      userState.delete(userId);
       return;
     }
 
-    // Обработка /start
-if (text === '/start') {
-  const existingUser = await getUser(userId);
+    // ==================== ОБРАБОТКА /START ====================
+    if (text === '/start') {
+      const existingUser = await getUser(userId);
 
-  if (!existingUser) {
-    await createUser(userId, username, firstName, lastName, chatId, null);
-    
-    await sendMessage(chatId, 
-      '👋 Добро пожаловать в Price Hunter!\n\n' +
-      'Для регистрации отправьте ваш email с доменом @patio-minsk.by:\n' +
-      '<code>/email ваш.email@patio-minsk.by</code>\n\n' +
-      'После проверки администратор подтвердит регистрацию.'
-    );
-    return;
-  }
+      if (!existingUser) {
+        // Создаём пользователя без email
+        await createUser(userId, username, firstName, lastName, chatId, null);
+        
+        // Устанавливаем состояние ожидания email
+        userState.set(userId, { state: 'awaiting_email' });
+        
+        await sendMessage(chatId, 
+          '👋 Добро пожаловать в Price Hunter!\n\n' +
+          'Для регистрации введите ваш email с доменом @patio-minsk.by:\n' +
+          'Например: <code>ivan@patio-minsk.by</code>'
+        );
+        return;
+      }
 
-  if (existingUser.status === 'approved') {
-    await sendMessage(chatId, 
-      '👋 Добро пожаловать!\n\n' +
-      '📋 <b>Команды:</b>\n' +
-      '/changes - изменения цен\n' +
-      '/status - статус\n' +
-      '/help - помощь'
-    );
-  } else if (existingUser.status === 'pending') {
-    await sendMessage(chatId, '⏳ Ваш email ожидает подтверждения администратором.');
-  } else if (existingUser.status === 'rejected') {
-    await sendMessage(chatId, '❌ Ваша регистрация отклонена. Обратитесь к администратору.');
-  } else {
-    await sendMessage(chatId, '❌ Доступ запрещён');
-  }
-  return;
-}
+      if (existingUser.status === 'approved') {
+        await sendMessage(chatId, 
+          '👋 Добро пожаловать!\n\n' +
+          '📋 <b>Команды:</b>\n' +
+          '/changes - изменения цен\n' +
+          '/status - статус\n' +
+          '/help - помощь'
+        );
+      } else if (existingUser.status === 'pending') {
+        await sendMessage(chatId, '⏳ Ваш email ожидает подтверждения администратором.');
+      } else if (existingUser.status === 'rejected') {
+        await sendMessage(chatId, '❌ Ваша регистрация отклонена. Обратитесь к администратору.');
+      } else {
+        await sendMessage(chatId, '❌ Доступ запрещён');
+      }
+      return;
+    }
 
-    // Проверка статуса
+    // ==================== ПРОВЕРКА СТАТУСА ====================
     if (!user || user.status !== 'approved') {
       await sendMessage(chatId, '❌ Доступ запрещён');
       return;
     }
 
-    // /status
+    // ==================== /STATUS ====================
     if (text === '/status') {
       if (!checkRateLimit(userId, '/status')) return;
       await sendMessage(chatId, formatStatusMessage(user));
       return;
     }
 
-    // /changes
+    // ==================== /CHANGES ====================
     if (text === '/changes') {
       if (!checkRateLimit(userId, '/changes')) return;
 
@@ -164,12 +173,13 @@ if (text === '/start') {
       return;
     }
 
-    // /help
+    // ==================== /HELP ====================
     if (text === '/help') {
       await sendMessage(chatId, formatHelpMessage());
       return;
     }
 
+    // ==================== НЕИЗВЕСТНАЯ КОМАНДА ====================
     await sendMessage(chatId, '❓ Неизвестная команда. /help');
     
   } catch (err) {
