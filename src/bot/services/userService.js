@@ -4,7 +4,7 @@ import Logger from '../../../src/services/logger.js';
 export async function getUser(telegramId) {
   try {
     const result = await db.execute({
-      sql: 'SELECT status, chat_id, selected_categories, selection_locked, user_id FROM telegram_users WHERE telegram_id = ?',
+      sql: 'SELECT status, chat_id, selected_categories, selection_locked, user_id, email FROM telegram_users WHERE telegram_id = ?',
       args: [telegramId]
     });
     
@@ -24,21 +24,32 @@ export async function getUser(telegramId) {
   }
 }
 
-export async function createUser(telegramId, username, firstName, lastName, chatId) {
+export async function createUser(telegramId, username, firstName, lastName, chatId, email = null) {
   try {
-    // Ищем существующего пользователя в таблице users по email (если есть)
-    // Или создаем запись только в telegram_users
     await db.execute({
       sql: `INSERT INTO telegram_users 
-            (telegram_id, username, first_name, last_name, chat_id, status, selected_categories, selection_locked)
-            VALUES (?, ?, ?, ?, ?, 'pending', '[]', ?)`,
-      args: [telegramId, username || '', firstName || '', lastName || '', chatId, false]
+            (telegram_id, username, first_name, last_name, chat_id, status, selected_categories, selection_locked, email)
+            VALUES (?, ?, ?, ?, ?, 'pending', '[]', ?, ?)`,
+      args: [telegramId, username || '', firstName || '', lastName || '', chatId, false, email]
     });
     
-    Logger.info('Создан пользователь бота', { telegramId, username });
+    Logger.info('Создан пользователь бота', { telegramId, username, email });
     return true;
   } catch (err) {
     Logger.error('Ошибка создания пользователя', err, { telegramId });
+    return false;
+  }
+}
+
+export async function updateUserEmail(telegramId, email) {
+  try {
+    await db.execute({
+      sql: 'UPDATE telegram_users SET email = ? WHERE telegram_id = ?',
+      args: [email, telegramId]
+    });
+    return true;
+  } catch (err) {
+    Logger.error('Ошибка обновления email', err, { telegramId });
     return false;
   }
 }
@@ -57,6 +68,19 @@ export async function updateUserStatus(telegramId, status, approvedBy = null) {
     return true;
   } catch (err) {
     Logger.error('Ошибка обновления статуса', err, { telegramId });
+    return false;
+  }
+}
+
+export async function addToAllowedEmails(email) {
+  try {
+    await db.execute({
+      sql: 'INSERT INTO allowed_emails (email) VALUES (?) ON CONFLICT(email) DO NOTHING',
+      args: [email]
+    });
+    return true;
+  } catch (err) {
+    Logger.error('Ошибка добавления email в белый список', err, { email });
     return false;
   }
 }

@@ -8,7 +8,10 @@ const envSchema = Joi.object({
   TURSO_TOKEN: Joi.string().required(),
   TELEGRAM_BOT_TOKEN: Joi.string().optional(),
   TELEGRAM_CHAT_ID: Joi.string().optional(),
-  API_URL: Joi.string().default('http://localhost:3000')
+  API_URL: Joi.string().default('http://localhost:3000'),
+  EMAIL_USER: Joi.string().optional(),
+  EMAIL_PASS: Joi.string().optional(),
+  EMAIL_FROM: Joi.string().optional()
 }).unknown();
 
 const { error, value: config } = envSchema.validate(process.env);

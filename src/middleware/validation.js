@@ -1,17 +1,23 @@
 import Joi from 'joi';
 
 export const schemas = {
-  email: Joi.string().email().required(),
-  password: Joi.string().min(6).max(100).required(),
-  code: Joi.string().pattern(/^\d{1,12}$/).required(),
-  codes: Joi.array().items(Joi.string().pattern(/^\d{1,12}$/)).min(1).max(100).required(),
-  telegramUrl: Joi.string().uri().required(),
-  telegramId: Joi.number().required(),
-  categories: Joi.array().items(Joi.string()).min(1).required(),
+  email: Joi.object({
+    email: Joi.string().email().required()
+  }),
   
   register: Joi.object({
     username: Joi.string().email().required(),
-    password: Joi.string().min(6).max(100).required()
+    password: Joi.string()
+      .min(8)
+      .max(100)
+      .pattern(/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/)
+      .required()
+      .messages({
+        'string.pattern.base': 'Пароль должен содержать минимум 8 символов, буквы и цифры',
+        'string.min': 'Пароль должен быть не менее 8 символов',
+        'string.max': 'Пароль не должен превышать 100 символов',
+        'any.required': 'Пароль обязателен'
+      })
   }),
   
   login: Joi.object({
@@ -21,7 +27,17 @@ export const schemas = {
   
   changePassword: Joi.object({
     currentPassword: Joi.string().required(),
-    newPassword: Joi.string().min(6).max(100).required()
+    newPassword: Joi.string()
+      .min(8)
+      .max(100)
+      .pattern(/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/)
+      .required()
+      .messages({
+        'string.pattern.base': 'Новый пароль должен содержать минимум 8 символов, буквы и цифры',
+        'string.min': 'Новый пароль должен быть не менее 8 символов',
+        'string.max': 'Новый пароль не должен превышать 100 символов',
+        'any.required': 'Новый пароль обязателен'
+      })
   }),
   
   addCode: Joi.object({
@@ -30,15 +46,6 @@ export const schemas = {
   
   bulkAddCodes: Joi.object({
     codes: Joi.array().items(Joi.string().pattern(/^\d{1,12}$/)).min(1).max(100).required()
-  }),
-  
-  updateUserCategories: Joi.object({
-    telegramId: Joi.number().required(),
-    categories: Joi.array().items(Joi.string()).required()
-  }),
-  
-  approveUser: Joi.object({
-    telegramId: Joi.number().required()
   })
 };
 

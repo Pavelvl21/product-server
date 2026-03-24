@@ -1,11 +1,29 @@
-import { config } from '../../../src/config/env.js';
-import { sendMessage } from '../index.js';
-import { getUser, updateUserStatus } from '../services/userService.js';
+import bcrypt from 'bcrypt';
+import db from '../../../database.js';
+import { sendMessage, editMessageReplyMarkup, answerCallback } from '../index.js';
+import { getUser, updateUserStatus, addToAllowedEmails } from '../services/userService.js';
 import { showCategoryList } from './callbackHandler.js';
-import { getAdminUserKeyboard } from '../keyboards.js';
+import { sendRegistrationEmail } from '../../../src/services/emailService.js';
 import Logger from '../../../src/services/logger.js';
 
-const ADMIN_CHAT_ID = config.TELEGRAM_CHAT_ID;
+const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// Генерация временного пароля
+const generateTempPassword = () => {
+  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const numbers = '23456789';
+  const all = letters + numbers;
+  let password = '';
+  
+  password += letters[Math.floor(Math.random() * letters.length)];
+  password += numbers[Math.floor(Math.random() * numbers.length)];
+  
+  for (let i = 2; i < 8; i++) {
+    password += all[Math.floor(Math.random() * all.length)];
+  }
+  
+  return password.split('').sort(() => Math.random() - 0.5).join('');
+};
 
 export async function notifyAdminAboutNewUser(userId, username, firstName, chatId) {
   try {
@@ -16,7 +34,13 @@ export async function notifyAdminAboutNewUser(userId, username, firstName, chatI
       `💬 Chat ID: <code>${chatId}</code>`
     ].join('\n');
 
-    const keyboard = getAdminUserKeyboard(userId);
+    const keyboard = {
+      inline_keyboard: [[
+        { text: '✅ Разрешить', callback_data: `approve_${userId}` },
+        { text: '❌ Отклонить', callback_data: `reject_${userId}` },
+        { text: '🚫 Заблокировать', callback_data: `block_${userId}` }
+      ]]
+    };
 
     await sendMessage(ADMIN_CHAT_ID, `🔔 Новый пользователь!\n\n${info}`, {
       reply_markup: keyboard
@@ -32,17 +56,123 @@ export async function handleAdminCallback(query) {
   const fromId = query.from.id;
 
   if (fromId != ADMIN_CHAT_ID) {
+    await answerCallback(query.id, '⛔ Нет прав');
     return false;
   }
 
   try {
+    // Подтверждение регистрации нового пользователя (с email)
+    if (data.startsWith('confirm_reg_')) {
+      const parts = data.split('_');
+      const userId = parseInt(parts[2]);
+      const email = parts.slice(3).join('_');
+      
+      const targetUser = await getUser(userId);
+      
+      if (!targetUser) {
+        await answerCallback(query.id, '❌ Пользователь не найден');
+        return false;
+      }
+      
+      // 1. Обновляем статус
+      await updateUserStatus(userId, 'approved', 'admin');
+      
+      // 2. Добавляем email в белый список
+      await addToAllowedEmails(email);
+      
+      // 3. Проверяем существование пользователя
+      const existingUser = await db.execute({
+        sql: 'SELECT id FROM users WHERE username = ?',
+        args: [email]
+      });
+      
+      let userId_db = null;
+      let tempPassword = null;
+      let expiresAt = null;
+      
+      if (existingUser.rows.length === 0) {
+        tempPassword = generateTempPassword();
+        const hash = await bcrypt.hash(tempPassword, 10);
+        
+        expiresAt = new Date();
+        expiresAt.setHours(expiresAt.getHours() + 72);
+        
+        const newUser = await db.execute({
+          sql: `INSERT INTO users (username, password_hash, temp_password, temp_password_expires) 
+                VALUES (?, ?, ?, ?) RETURNING id`,
+          args: [email, hash, tempPassword, expiresAt.toISOString()]
+        });
+        
+        userId_db = newUser.rows[0].id;
+        
+        // Отправляем письмо
+        await sendRegistrationEmail(email, tempPassword, expiresAt);
+        
+        // Отправляем уведомление в Telegram
+        await sendMessage(targetUser.chat_id, 
+          `✅ <b>Регистрация подтверждена!</b>\n\n` +
+          `📧 На ваш email <code>${email}</code> отправлен временный пароль.\n\n` +
+          `⏰ Срок действия пароля: 72 часа\n\n` +
+          `🔗 <a href="https://price-hunter-bel.vercel.app/login">Войти на сайт</a>\n\n` +
+          `⚠️ <b>Обязательно смените пароль после первого входа!</b>`
+        );
+      } else {
+        userId_db = existingUser.rows[0].id;
+        
+        await sendMessage(targetUser.chat_id, 
+          `✅ <b>Регистрация подтверждена!</b>\n\n` +
+          `Ваш email: <code>${email}</code>\n` +
+          `Вы уже зарегистрированы на сайте. Используйте свой пароль для входа.\n\n` +
+          `🔗 <a href="https://price-hunter-bel.vercel.app/login">Войти на сайт</a>`
+        );
+      }
+      
+      // 4. Привязываем telegram_users к users
+      await db.execute({
+        sql: 'UPDATE telegram_users SET user_id = ? WHERE telegram_id = ?',
+        args: [userId_db, userId]
+      });
+      
+      // 5. Редактируем сообщение админа
+      await editMessageReplyMarkup(msg.chat.id, msg.message_id, { inline_keyboard: [] });
+      
+      // 6. Показываем выбор категорий
+      await showCategoryList(targetUser.chat_id, userId);
+      
+      await answerCallback(query.id, '✅ Регистрация подтверждена');
+      return true;
+    }
+    
+    // Отклонение регистрации
+    if (data.startsWith('reject_reg_')) {
+      const userId = parseInt(data.replace('reject_reg_', ''));
+      const targetUser = await getUser(userId);
+      
+      if (targetUser) {
+        await updateUserStatus(userId, 'rejected', 'admin');
+        
+        await editMessageReplyMarkup(msg.chat.id, msg.message_id, { inline_keyboard: [] });
+        
+        await sendMessage(targetUser.chat_id, 
+          '❌ <b>Ваша регистрация отклонена.</b>\n\n' +
+          'Если вы считаете, что это ошибка, обратитесь к администратору.'
+        );
+      }
+      
+      await answerCallback(query.id, '❌ Регистрация отклонена');
+      return true;
+    }
+    
+    // Существующие обработчики approve_/reject_/block_ (для обратной совместимости)
     if (data.startsWith('approve_')) {
       const userId = data.replace('approve_', '');
       const targetUser = await getUser(userId);
       
       if (!targetUser) return false;
-
+      
       await updateUserStatus(userId, 'approved', 'admin');
+      
+      await editMessageReplyMarkup(msg.chat.id, msg.message_id, { inline_keyboard: [] });
       
       await sendMessage(targetUser.chat_id, 
         '✅ <b>Ваш запрос одобрен!</b>\n\n' +
@@ -50,9 +180,11 @@ export async function handleAdminCallback(query) {
       );
       
       await showCategoryList(targetUser.chat_id, userId);
+      
+      await answerCallback(query.id, '✅ Подтверждено');
       return true;
     }
-
+    
     if (data.startsWith('reject_')) {
       const userId = data.replace('reject_', '');
       const targetUser = await getUser(userId);
@@ -60,13 +192,17 @@ export async function handleAdminCallback(query) {
       if (targetUser) {
         await updateUserStatus(userId, 'rejected', 'admin');
         
+        await editMessageReplyMarkup(msg.chat.id, msg.message_id, { inline_keyboard: [] });
+        
         if (targetUser.chat_id) {
           await sendMessage(targetUser.chat_id, '⛔ <b>Доступ отклонён</b>');
         }
       }
+      
+      await answerCallback(query.id, '❌ Отклонено');
       return true;
     }
-
+    
     if (data.startsWith('block_')) {
       const userId = data.replace('block_', '');
       const targetUser = await getUser(userId);
@@ -74,16 +210,22 @@ export async function handleAdminCallback(query) {
       if (targetUser) {
         await updateUserStatus(userId, 'blocked', 'admin');
         
+        await editMessageReplyMarkup(msg.chat.id, msg.message_id, { inline_keyboard: [] });
+        
         if (targetUser.chat_id) {
           await sendMessage(targetUser.chat_id, '🚫 <b>Вы заблокированы</b>');
         }
       }
+      
+      await answerCallback(query.id, '🚫 Заблокировано');
       return true;
     }
-
+    
     return false;
+    
   } catch (err) {
     Logger.error('Ошибка обработки админ callback', err);
+    await answerCallback(query.id, '❌ Произошла ошибка');
     return false;
   }
 }
