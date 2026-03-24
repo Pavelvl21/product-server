@@ -2,10 +2,27 @@ import bcrypt from 'bcrypt';
 import db from '../../../database.js';
 import { sendMessage, editMessageReplyMarkup, answerCallback } from '../index.js';
 import { getUser, updateUserStatus, addToAllowedEmails } from '../services/userService.js';
-import { sendRegistrationLink } from '../../../src/services/emailService.js';
+import { sendTempPasswordEmail } from '../../../src/services/emailService.js';
 import Logger from '../../../src/services/logger.js';
 
 const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// Генерация временного пароля (8 символов, буквы + цифры)
+const generateTempPassword = () => {
+  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const numbers = '23456789';
+  const all = letters + numbers;
+  let password = '';
+  
+  password += letters[Math.floor(Math.random() * letters.length)];
+  password += numbers[Math.floor(Math.random() * numbers.length)];
+  
+  for (let i = 2; i < 8; i++) {
+    password += all[Math.floor(Math.random() * all.length)];
+  }
+  
+  return password.split('').sort(() => Math.random() - 0.5).join('');
+};
 
 export async function notifyAdminAboutNewUser(userId, username, firstName, chatId) {
   try {
@@ -70,12 +87,21 @@ export async function handleAdminCallback(query) {
       });
       
       let userId_db = null;
+      let tempPassword = null;
+      let expiresAt = null;
       
       if (existingUser.rows.length === 0) {
-        // Создаём пользователя без пароля (пустой пароль)
+        // Генерируем временный пароль
+        tempPassword = generateTempPassword();
+        const hash = await bcrypt.hash(tempPassword, 10);
+        
+        expiresAt = new Date();
+        expiresAt.setHours(expiresAt.getHours() + 72);
+        
         const newUser = await db.execute({
-          sql: `INSERT INTO users (username, password_hash) VALUES (?, ?) RETURNING id`,
-          args: [email, '']
+          sql: `INSERT INTO users (username, password_hash, temp_password, temp_password_expires) 
+                VALUES (?, ?, ?, ?) RETURNING id`,
+          args: [email, hash, tempPassword, expiresAt.toISOString()]
         });
         
         userId_db = newUser.rows[0].id;
@@ -86,14 +112,17 @@ export async function handleAdminCallback(query) {
           args: [userId, userId_db]
         });
         
-        // Отправляем письмо со ссылкой на регистрацию
-        await sendRegistrationLink(email);
+        // Отправляем письмо с временным паролем (БЕЗ ССЫЛКИ)
+        await sendTempPasswordEmail(email, tempPassword, expiresAt);
         
-        // Отправляем уведомление в Telegram
+        // Отправляем уведомление в Telegram (ССЫЛКА ТОЛЬКО ЗДЕСЬ)
         await sendMessage(targetUser.chat_id, 
           `✅ <b>Регистрация подтверждена!</b>\n\n` +
-          `📧 На ваш email <code>${email}</code> отправлена ссылка для завершения регистрации.\n\n` +
-          `🔗 Перейдите по ссылке, чтобы создать пароль.\n\n` +
+          `📧 На ваш email <code>${email}</code> отправлен временный пароль.\n\n` +
+          `🔗 <b>Войти на сайт:</b> https://price-hunter-bel.vercel.app/login\n\n` +
+          `📋 <b>Ваш временный пароль:</b> <code>${tempPassword}</code>\n\n` +
+          `⏰ Срок действия пароля: 72 часа\n\n` +
+          `⚠️ <b>Обязательно смените пароль после первого входа!</b>\n\n` +
           `📋 <b>Команды бота:</b>\n` +
           `/changes - изменения цен\n` +
           `/status - статус\n` +
@@ -102,6 +131,7 @@ export async function handleAdminCallback(query) {
       } else {
         userId_db = existingUser.rows[0].id;
         
+        // Обновляем telegram_id в users
         await db.execute({
           sql: 'UPDATE users SET telegram_id = ? WHERE id = ?',
           args: [userId, userId_db]

@@ -38,25 +38,31 @@ export async function sendEmail(to, subject, text) {
   }
 }
 
-export async function sendRegistrationLink(email) {
+export async function sendTempPasswordEmail(email, tempPassword, expiresAt) {
+  const expiresDate = new Date(expiresAt);
+  const expiresFormatted = expiresDate.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/Minsk'
+  });
+  
   const text = `
 Добро пожаловать в Price Hunter!
 
 Ваша регистрация подтверждена.
 
-Для завершения регистрации и создания пароля перейдите по ссылке:
-https://price-hunter-bel.vercel.app/register?email=${encodeURIComponent(email)}
+Ваш временный пароль: ${tempPassword}
 
-После регистрации вы сможете войти в личный кабинет и пользоваться ботом.
+Срок действия пароля: до ${expiresFormatted} (72 часа)
 
-📋 Команды бота:
-/changes - изменения цен
-/status - статус
-/help - помощь
+После входа обязательно смените пароль.
 
 ---
 Price Hunter
   `;
   
-  return await sendEmail(email, 'Завершение регистрации в Price Hunter', text);
+  return await sendEmail(email, 'Ваш временный пароль для Price Hunter', text);
 }
