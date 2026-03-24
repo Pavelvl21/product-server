@@ -138,8 +138,6 @@ export async function changePassword(req, res, next) {
     const userId = req.user.id;
     const { currentPassword, newPassword } = req.validatedBody;
     
-    Logger.info('🔍 [changePassword] Начало для userId:', userId);
-    
     const user = await db.execute({
       sql: `SELECT username, password_hash, temp_password, temp_password_expires 
             FROM users WHERE id = ?`,
@@ -149,13 +147,6 @@ export async function changePassword(req, res, next) {
     if (user.rows.length === 0) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
-    
-    Logger.info('🔍 [changePassword] Найден пользователь:', {
-      username: user.rows[0].username,
-      hasHash: !!user.rows[0].password_hash,
-      hasTemp: !!user.rows[0].temp_password,
-      tempExpires: user.rows[0].temp_password_expires
-    });
     
     // Проверка, что новый пароль не содержит email
     const username = user.rows[0].username;
@@ -170,27 +161,15 @@ export async function changePassword(req, res, next) {
     
     // Проверяем текущий пароль (обычный или временный)
     let isValid = await bcrypt.compare(currentPassword, user.rows[0].password_hash);
-    let isTempPassword = false;
-    
-    Logger.info('🔍 [changePassword] Проверка пароля:', {
-      bcryptValid: isValid,
-      hasTemp: !!user.rows[0].temp_password
-    });
     
     if (!isValid && user.rows[0].temp_password) {
       isValid = currentPassword === user.rows[0].temp_password;
-      Logger.info('🔍 [changePassword] Проверка временного пароля:', {
-        match: isValid,
-        tempPassword: user.rows[0].temp_password
-      });
       if (isValid) {
         const expiresAt = new Date(user.rows[0].temp_password_expires);
         const now = new Date();
-        
         if (now > expiresAt) {
           return res.status(401).json({ error: 'Временный пароль истек' });
         }
-        isTempPassword = true;
       }
     }
     
@@ -205,35 +184,35 @@ export async function changePassword(req, res, next) {
     
     const hash = await bcrypt.hash(newPassword, 10);
     
-    Logger.info('🔍 [changePassword] ПЕРЕД UPDATE, userId:', userId);
-    
-    const updateResult = await db.execute({
-      sql: `UPDATE users 
-            SET password_hash = ?, 
-                temp_password = NULL, 
-                temp_password_expires = NULL 
-            WHERE id = ?`,
+    // Обновляем пароль
+    await db.execute({
+      sql: `UPDATE users SET password_hash = ? WHERE id = ?`,
       args: [hash, userId]
     });
     
-    Logger.info('🔍 [changePassword] ПОСЛЕ UPDATE:', {
-      changes: updateResult.changes,
-      lastInsertRowid: updateResult.lastInsertRowid
-    });
-    
-    // Проверяем, что очистилось
-    const checkUser = await db.execute({
-      sql: 'SELECT temp_password FROM users WHERE id = ?',
+    // Удаляем временный пароль
+    const deleteResult = await db.execute({
+      sql: `UPDATE users SET temp_password = NULL, temp_password_expires = NULL WHERE id = ?`,
       args: [userId]
     });
     
-    Logger.info('🔍 [changePassword] temp_password после UPDATE:', checkUser.rows[0]?.temp_password);
+    // Проверяем результат
+    const checkUser = await db.execute({
+      sql: `SELECT temp_password FROM users WHERE id = ?`,
+      args: [userId]
+    });
     
-    Logger.info('Пароль изменен', { userId, wasTempPassword: isTempPassword });
-    res.json({ message: 'Пароль успешно изменен' });
+    // Возвращаем информацию в ответе
+    return res.json({ 
+      message: 'Пароль успешно изменен',
+      debug: {
+        userId,
+        changes: deleteResult.changes,
+        tempPasswordAfter: checkUser.rows[0]?.temp_password
+      }
+    });
     
   } catch (err) {
-    console.error('❌ [changePassword] Ошибка:', err);
     Logger.error('Ошибка смены пароля', err, { userId: req.user?.id });
     next(err);
   }
