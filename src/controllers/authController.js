@@ -138,7 +138,7 @@ export async function changePassword(req, res, next) {
     const userId = req.user.id;
     const { currentPassword, newPassword } = req.validatedBody;
     
-    console.log('🔍 [changePassword] Начало для userId:', userId);
+    Logger.info('🔍 [changePassword] Начало для userId:', userId);
     
     const user = await db.execute({
       sql: `SELECT username, password_hash, temp_password, temp_password_expires 
@@ -150,7 +150,7 @@ export async function changePassword(req, res, next) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
     
-    console.log('🔍 [changePassword] Найден пользователь:', {
+    Logger.info('🔍 [changePassword] Найден пользователь:', {
       username: user.rows[0].username,
       hasHash: !!user.rows[0].password_hash,
       hasTemp: !!user.rows[0].temp_password,
@@ -172,14 +172,14 @@ export async function changePassword(req, res, next) {
     let isValid = await bcrypt.compare(currentPassword, user.rows[0].password_hash);
     let isTempPassword = false;
     
-    console.log('🔍 [changePassword] Проверка пароля:', {
+    Logger.info('🔍 [changePassword] Проверка пароля:', {
       bcryptValid: isValid,
       hasTemp: !!user.rows[0].temp_password
     });
     
     if (!isValid && user.rows[0].temp_password) {
       isValid = currentPassword === user.rows[0].temp_password;
-      console.log('🔍 [changePassword] Проверка временного пароля:', {
+      Logger.info('🔍 [changePassword] Проверка временного пароля:', {
         match: isValid,
         tempPassword: user.rows[0].temp_password
       });
@@ -205,7 +205,7 @@ export async function changePassword(req, res, next) {
     
     const hash = await bcrypt.hash(newPassword, 10);
     
-    console.log('🔍 [changePassword] ПЕРЕД UPDATE, userId:', userId);
+    Logger.info('🔍 [changePassword] ПЕРЕД UPDATE, userId:', userId);
     
     const updateResult = await db.execute({
       sql: `UPDATE users 
@@ -216,7 +216,7 @@ export async function changePassword(req, res, next) {
       args: [hash, userId]
     });
     
-    console.log('🔍 [changePassword] ПОСЛЕ UPDATE:', {
+    Logger.info('🔍 [changePassword] ПОСЛЕ UPDATE:', {
       changes: updateResult.changes,
       lastInsertRowid: updateResult.lastInsertRowid
     });
@@ -227,7 +227,7 @@ export async function changePassword(req, res, next) {
       args: [userId]
     });
     
-    console.log('🔍 [changePassword] temp_password после UPDATE:', checkUser.rows[0]?.temp_password);
+    Logger.info('🔍 [changePassword] temp_password после UPDATE:', checkUser.rows[0]?.temp_password);
     
     Logger.info('Пароль изменен', { userId, wasTempPassword: isTempPassword });
     res.json({ message: 'Пароль успешно изменен' });
