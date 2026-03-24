@@ -32,6 +32,64 @@ export async function handleMessage(message) {
       return;
     }
 
+    // ==================== КОМАНДА ДЛЯ АДМИНА: ОТПРАВКА ТЕСТОВОГО ПИСЬМА ====================
+    if (text && text.startsWith('/smsg ')) {
+      // Проверяем, что отправитель — админ
+      if (userId != ADMIN_CHAT_ID) {
+        await sendMessage(chatId, '⛔ Нет прав');
+        return;
+      }
+      
+      // Разбираем команду: /smsg email@example.com текст сообщения
+      const parts = text.split(' ');
+      if (parts.length < 3) {
+        await sendMessage(chatId, 
+          '❌ Неверный формат. Используйте:\n' +
+          '<code>/smsg email@domain.com текст сообщения</code>\n\n' +
+          'Пример: <code>/smsg user@patio-minsk.by Привет, это тест!</code>'
+        );
+        return;
+      }
+      
+      const email = parts[1];
+      const messageText = parts.slice(2).join(' ');
+      
+      // Простая валидация email
+      const emailRegex = /^[^\s@]+@([^\s@]+)$/;
+      if (!emailRegex.test(email)) {
+        await sendMessage(chatId, '❌ Неверный формат email');
+        return;
+      }
+      
+      try {
+        // Импортируем функцию отправки email
+        const { sendEmail } = await import('../../../src/services/emailService.js');
+        
+        const subject = 'Тестовое сообщение от Price Hunter';
+        const text = `
+${messageText}
+
+---
+Это тестовое сообщение отправлено через бот Price Hunter.
+        `;
+        
+        const result = await sendEmail(email, subject, text);
+        
+        if (result) {
+          await sendMessage(chatId, `✅ Сообщение отправлено на ${email}`);
+          Logger.info('Тестовое письмо отправлено админом', { email, messageText });
+        } else {
+          await sendMessage(chatId, `❌ Не удалось отправить сообщение на ${email}`);
+        }
+        
+      } catch (err) {
+        Logger.error('Ошибка отправки тестового письма', err, { email });
+        await sendMessage(chatId, `❌ Ошибка при отправке: ${err.message}`);
+      }
+      
+      return;
+    }
+
     // ==================== ОБРАБОТКА ВВОДА EMAIL (после /start) ====================
     const state = userState.get(userId);
     if (state && state.state === 'awaiting_email' && text && !text.startsWith('/')) {
