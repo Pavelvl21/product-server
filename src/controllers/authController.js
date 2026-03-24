@@ -159,7 +159,6 @@ export async function changePassword(req, res, next) {
       });
     }
     
-    // Проверяем текущий пароль (обычный или временный)
     let isValid = await bcrypt.compare(currentPassword, user.rows[0].password_hash);
     
     if (!isValid && user.rows[0].temp_password) {
@@ -167,6 +166,7 @@ export async function changePassword(req, res, next) {
       if (isValid) {
         const expiresAt = new Date(user.rows[0].temp_password_expires);
         const now = new Date();
+        
         if (now > expiresAt) {
           return res.status(401).json({ error: 'Временный пароль истек' });
         }
@@ -184,33 +184,17 @@ export async function changePassword(req, res, next) {
     
     const hash = await bcrypt.hash(newPassword, 10);
     
-    // Обновляем пароль
     await db.execute({
-      sql: `UPDATE users SET password_hash = ? WHERE id = ?`,
+      sql: `UPDATE users 
+            SET password_hash = ?, 
+                temp_password = NULL, 
+                temp_password_expires = NULL 
+            WHERE id = ?`,
       args: [hash, userId]
     });
     
-    // Удаляем временный пароль
-    const deleteResult = await db.execute({
-      sql: `UPDATE users SET temp_password = NULL, temp_password_expires = NULL WHERE id = ?`,
-      args: [userId]
-    });
-    
-    // Проверяем результат
-    const checkUser = await db.execute({
-      sql: `SELECT temp_password FROM users WHERE id = ?`,
-      args: [userId]
-    });
-    
-    // Возвращаем информацию в ответе
-    return res.json({ 
-      message: 'Пароль успешно изменен',
-      debug: {
-        userId,
-        changes: deleteResult.changes,
-        tempPasswordAfter: checkUser.rows[0]?.temp_password
-      }
-    });
+    Logger.info('Пароль изменен', { userId });
+    res.json({ message: 'Пароль успешно изменен' });
     
   } catch (err) {
     Logger.error('Ошибка смены пароля', err, { userId: req.user?.id });

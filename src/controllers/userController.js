@@ -69,7 +69,7 @@ export async function changePassword(req, res, next) {
     const { currentPassword, newPassword } = req.validatedBody;
     
     const user = await db.execute({
-      sql: 'SELECT password_hash FROM users WHERE id = ?',
+      sql: 'SELECT password_hash, temp_password, temp_password_expires FROM users WHERE id = ?',
       args: [userId]
     });
     
@@ -77,15 +77,49 @@ export async function changePassword(req, res, next) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
     
-    const valid = await bcrypt.compare(currentPassword, user.rows[0].password_hash);
-    if (!valid) {
+    // Проверка текущего пароля (обычный или временный)
+    let isValid = await bcrypt.compare(currentPassword, user.rows[0].password_hash);
+    
+    if (!isValid && user.rows[0].temp_password) {
+      isValid = currentPassword === user.rows[0].temp_password;
+      if (isValid) {
+        const expiresAt = new Date(user.rows[0].temp_password_expires);
+        const now = new Date();
+        if (now > expiresAt) {
+          return res.status(401).json({ error: 'Временный пароль истек' });
+        }
+      }
+    }
+    
+    if (!isValid) {
       return res.status(401).json({ error: 'Неверный текущий пароль' });
+    }
+    
+    // Проверка, что новый пароль не содержит email
+    const username = req.user.username;
+    const emailLocalPart = username.split('@')[0].toLowerCase();
+    const newPasswordLower = newPassword.toLowerCase();
+    
+    if (newPasswordLower.includes(emailLocalPart) || newPasswordLower.includes(username.toLowerCase())) {
+      return res.status(400).json({ 
+        error: 'Пароль не должен содержать email или имя пользователя' 
+      });
+    }
+    
+    const isSameAsOld = await bcrypt.compare(newPassword, user.rows[0].password_hash);
+    if (isSameAsOld) {
+      return res.status(400).json({ error: 'Новый пароль должен отличаться от текущего' });
     }
     
     const hash = await bcrypt.hash(newPassword, 10);
     
+    // Обновляем пароль И удаляем временный
     await db.execute({
-      sql: 'UPDATE users SET password_hash = ? WHERE id = ?',
+      sql: `UPDATE users 
+            SET password_hash = ?, 
+                temp_password = NULL, 
+                temp_password_expires = NULL 
+            WHERE id = ?`,
       args: [hash, userId]
     });
     
