@@ -1,5 +1,5 @@
 import { config } from '../../../src/config/env.js';
-import { sendMessage, editMessageText, editMessageReplyMarkup } from '../index.js';
+import { sendMessage, editMessageText } from '../index.js';
 import { checkRateLimit } from '../services/rateLimiter.js';
 import { 
   getUser, createUser, updateUserEmail, updateUserStatus, lockUserSelection,
@@ -52,6 +52,9 @@ export async function handleMessage(message) {
       // Сохраняем email
       await updateUserEmail(userId, email);
       
+      // Кодируем email для callback_data (убираем проблемные символы)
+      const encodedEmail = Buffer.from(email).toString('base64').replace(/[+/=]/g, '');
+      
       // Отправляем уведомление админу
       const userInfo = await getUser(userId);
       const info = [
@@ -64,7 +67,7 @@ export async function handleMessage(message) {
       
       const keyboard = {
         inline_keyboard: [[
-          { text: '✅ Подтвердить регистрацию', callback_data: `confirm_reg_${userId}_${email}` },
+          { text: '✅ Подтвердить регистрацию', callback_data: `confirm_reg_${userId}_${encodedEmail}` },
           { text: '❌ Отклонить', callback_data: `reject_reg_${userId}` }
         ]]
       };
@@ -78,42 +81,38 @@ export async function handleMessage(message) {
     }
 
     // Обработка /start
-    if (text === '/start') {
-      const existingUser = await getUser(userId);
+if (text === '/start') {
+  const existingUser = await getUser(userId);
 
-      if (!existingUser) {
-        await createUser(userId, username, firstName, lastName, chatId, null);
-        
-        await sendMessage(chatId, 
-          '👋 Добро пожаловать в Price Hunter!\n\n' +
-          'Для регистрации отправьте ваш email с доменом @patio-minsk.by:\n' +
-          '<code>/email ваш.email@patio-minsk.by</code>\n\n' +
-          'После проверки администратор подтвердит регистрацию.'
-        );
-        return;
-      }
+  if (!existingUser) {
+    await createUser(userId, username, firstName, lastName, chatId, null);
+    
+    await sendMessage(chatId, 
+      '👋 Добро пожаловать в Price Hunter!\n\n' +
+      'Для регистрации отправьте ваш email с доменом @patio-minsk.by:\n' +
+      '<code>/email ваш.email@patio-minsk.by</code>\n\n' +
+      'После проверки администратор подтвердит регистрацию.'
+    );
+    return;
+  }
 
-      if (existingUser.status === 'approved') {
-        if (!existingUser.selection_locked) {
-          await showCategoryList(chatId, userId);
-        } else {
-          await sendMessage(chatId, 
-            '👋 Добро пожаловать!\n\n' +
-            '📋 <b>Команды:</b>\n' +
-            '/changes - изменения цен\n' +
-            '/status - статус\n' +
-            '/help - помощь'
-          );
-        }
-      } else if (existingUser.status === 'pending') {
-        await sendMessage(chatId, '⏳ Ваш email ожидает подтверждения администратором.');
-      } else if (existingUser.status === 'rejected') {
-        await sendMessage(chatId, '❌ Ваша регистрация отклонена. Обратитесь к администратору.');
-      } else {
-        await sendMessage(chatId, '❌ Доступ запрещён');
-      }
-      return;
-    }
+  if (existingUser.status === 'approved') {
+    await sendMessage(chatId, 
+      '👋 Добро пожаловать!\n\n' +
+      '📋 <b>Команды:</b>\n' +
+      '/changes - изменения цен\n' +
+      '/status - статус\n' +
+      '/help - помощь'
+    );
+  } else if (existingUser.status === 'pending') {
+    await sendMessage(chatId, '⏳ Ваш email ожидает подтверждения администратором.');
+  } else if (existingUser.status === 'rejected') {
+    await sendMessage(chatId, '❌ Ваша регистрация отклонена. Обратитесь к администратору.');
+  } else {
+    await sendMessage(chatId, '❌ Доступ запрещён');
+  }
+  return;
+}
 
     // Проверка статуса
     if (!user || user.status !== 'approved') {

@@ -7,6 +7,18 @@ import { getCategoryKeyboard, getFinishKeyboard, getSuccessKeyboard } from '../k
 import Logger from '../../../src/services/logger.js';
 import { BOT_CONSTANTS } from '../constants.js';
 
+async function getCategoriesFromServer() {
+  try {
+    const response = await fetch(`${process.env.API_URL || 'http://localhost:3000'}/api/public/categories`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.categories || [];
+  } catch (err) {
+    Logger.error('Ошибка получения категорий с сервера', err);
+    return [];
+  }
+}
+
 export async function showCategoryList(chatId, userId) {
   try {
     const categories = await getCategoriesFromServer();
@@ -32,18 +44,6 @@ export async function showCategoryList(chatId, userId) {
   } catch (err) {
     Logger.error('Ошибка показа категорий', err);
     await sendMessage(chatId, '❌ Произошла ошибка при загрузке категорий');
-  }
-}
-
-async function getCategoriesFromServer() {
-  try {
-    const response = await fetch(`${process.env.API_URL || 'http://localhost:3000'}/api/public/categories`);
-    if (!response.ok) return [];
-    const data = await response.json();
-    return data.categories || [];
-  } catch (err) {
-    Logger.error('Ошибка получения категорий с сервера', err);
-    return [];
   }
 }
 

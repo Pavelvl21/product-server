@@ -8,7 +8,7 @@ import Logger from '../../../src/services/logger.js';
 
 const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Генерация временного пароля
+// Генерация временного пароля (8 символов, буквы + цифры)
 const generateTempPassword = () => {
   const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
   const numbers = '23456789';
@@ -61,89 +61,102 @@ export async function handleAdminCallback(query) {
   }
 
   try {
-    // Подтверждение регистрации нового пользователя (с email)
-    if (data.startsWith('confirm_reg_')) {
-      const parts = data.split('_');
-      const userId = parseInt(parts[2]);
-      const email = parts.slice(3).join('_');
-      
-      const targetUser = await getUser(userId);
-      
-      if (!targetUser) {
-        await answerCallback(query.id, '❌ Пользователь не найден');
-        return false;
-      }
-      
-      // 1. Обновляем статус
-      await updateUserStatus(userId, 'approved', 'admin');
-      
-      // 2. Добавляем email в белый список
-      await addToAllowedEmails(email);
-      
-      // 3. Проверяем существование пользователя
-      const existingUser = await db.execute({
-        sql: 'SELECT id FROM users WHERE username = ?',
-        args: [email]
-      });
-      
-      let userId_db = null;
-      let tempPassword = null;
-      let expiresAt = null;
-      
-      if (existingUser.rows.length === 0) {
-        tempPassword = generateTempPassword();
-        const hash = await bcrypt.hash(tempPassword, 10);
-        
-        expiresAt = new Date();
-        expiresAt.setHours(expiresAt.getHours() + 72);
-        
-        const newUser = await db.execute({
-          sql: `INSERT INTO users (username, password_hash, temp_password, temp_password_expires) 
-                VALUES (?, ?, ?, ?) RETURNING id`,
-          args: [email, hash, tempPassword, expiresAt.toISOString()]
-        });
-        
-        userId_db = newUser.rows[0].id;
-        
-        // Отправляем письмо
-        await sendRegistrationEmail(email, tempPassword, expiresAt);
-        
-        // Отправляем уведомление в Telegram
-        await sendMessage(targetUser.chat_id, 
-          `✅ <b>Регистрация подтверждена!</b>\n\n` +
-          `📧 На ваш email <code>${email}</code> отправлен временный пароль.\n\n` +
-          `⏰ Срок действия пароля: 72 часа\n\n` +
-          `🔗 <a href="https://price-hunter-bel.vercel.app/login">Войти на сайт</a>\n\n` +
-          `⚠️ <b>Обязательно смените пароль после первого входа!</b>`
-        );
-      } else {
-        userId_db = existingUser.rows[0].id;
-        
-        await sendMessage(targetUser.chat_id, 
-          `✅ <b>Регистрация подтверждена!</b>\n\n` +
-          `Ваш email: <code>${email}</code>\n` +
-          `Вы уже зарегистрированы на сайте. Используйте свой пароль для входа.\n\n` +
-          `🔗 <a href="https://price-hunter-bel.vercel.app/login">Войти на сайт</a>`
-        );
-      }
-      
-      // 4. Привязываем telegram_users к users
-      await db.execute({
-        sql: 'UPDATE telegram_users SET user_id = ? WHERE telegram_id = ?',
-        args: [userId_db, userId]
-      });
-      
-      // 5. Редактируем сообщение админа
-      await editMessageReplyMarkup(msg.chat.id, msg.message_id, { inline_keyboard: [] });
-      
-      // 6. Показываем выбор категорий
-      await showCategoryList(targetUser.chat_id, userId);
-      
-      await answerCallback(query.id, '✅ Регистрация подтверждена');
-      return true;
-    }
+    // ==================== ПОДТВЕРЖДЕНИЕ РЕГИСТРАЦИИ (с email) ====================
+if (data.startsWith('confirm_reg_')) {
+  const parts = data.split('_');
+  const userId = parseInt(parts[2]);
+  const encodedEmail = parts.slice(3).join('_');
+  const email = Buffer.from(encodedEmail, 'base64').toString();
+  
+  const targetUser = await getUser(userId);
+  
+  if (!targetUser) {
+    await answerCallback(query.id, '❌ Пользователь не найден');
+    return false;
+  }
+  
+  // 1. Обновляем статус в telegram_users
+  await updateUserStatus(userId, 'approved', 'admin');
+  
+  // 2. Добавляем email в белый список allowed_emails
+  await addToAllowedEmails(email);
+  
+  // 3. Проверяем, существует ли пользователь в таблице users
+  const existingUser = await db.execute({
+    sql: 'SELECT id FROM users WHERE username = ?',
+    args: [email]
+  });
+  
+  let userId_db = null;
+  let tempPassword = null;
+  let expiresAt = null;
+  
+  if (existingUser.rows.length === 0) {
+    tempPassword = generateTempPassword();
+    const hash = await bcrypt.hash(tempPassword, 10);
     
-    // Отклонение регистрации
+    expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 72);
+    
+    const newUser = await db.execute({
+      sql: `INSERT INTO users (username, password_hash, temp_password, temp_password_expires) 
+            VALUES (?, ?, ?, ?) RETURNING id`,
+      args: [email, hash, tempPassword, expiresAt.toISOString()]
+    });
+    
+    userId_db = newUser.rows[0].id;
+    
+    await db.execute({
+      sql: 'UPDATE users SET telegram_id = ? WHERE id = ?',
+      args: [userId, userId_db]
+    });
+    
+    await sendRegistrationEmail(email, tempPassword, expiresAt);
+    
+    await sendMessage(targetUser.chat_id, 
+      `✅ <b>Регистрация подтверждена!</b>\n\n` +
+      `📧 На ваш email <code>${email}</code> отправлен временный пароль.\n\n` +
+      `⏰ Срок действия пароля: 72 часа\n\n` +
+      `🔗 <a href="https://price-hunter-bel.vercel.app/login">Войти на сайт</a>\n\n` +
+      `⚠️ <b>Обязательно смените пароль после первого входа!</b>\n\n` +
+      `📋 <b>Команды бота:</b>\n` +
+      `/changes - изменения цен\n` +
+      `/status - статус\n` +
+      `/help - помощь`
+    );
+  } else {
+    userId_db = existingUser.rows[0].id;
+    
+    await db.execute({
+      sql: 'UPDATE users SET telegram_id = ? WHERE id = ?',
+      args: [userId, userId_db]
+    });
+    
+    await sendMessage(targetUser.chat_id, 
+      `✅ <b>Регистрация подтверждена!</b>\n\n` +
+      `Ваш email: <code>${email}</code>\n` +
+      `Вы уже зарегистрированы на сайте. Используйте свой пароль для входа.\n\n` +
+      `🔗 <a href="https://price-hunter-bel.vercel.app/login">Войти на сайт</a>\n\n` +
+      `📋 <b>Команды бота:</b>\n` +
+      `/changes - изменения цен\n` +
+      `/status - статус\n` +
+      `/help - помощь`
+    );
+  }
+  
+  // 4. Привязываем telegram_users к users
+  await db.execute({
+    sql: 'UPDATE telegram_users SET user_id = ? WHERE telegram_id = ?',
+    args: [userId_db, userId]
+  });
+  
+  // 5. Редактируем сообщение админа
+  await editMessageReplyMarkup(msg.chat.id, msg.message_id, { inline_keyboard: [] });
+  
+  await answerCallback(query.id, '✅ Регистрация подтверждена');
+  return true;
+}
+    // ==================== ОТКЛОНЕНИЕ РЕГИСТРАЦИИ ====================
     if (data.startsWith('reject_reg_')) {
       const userId = parseInt(data.replace('reject_reg_', ''));
       const targetUser = await getUser(userId);
@@ -163,7 +176,7 @@ export async function handleAdminCallback(query) {
       return true;
     }
     
-    // Существующие обработчики approve_/reject_/block_ (для обратной совместимости)
+    // ==================== ОБРАТНАЯ СОВМЕСТИМОСТЬ (старые кнопки approve/reject/block) ====================
     if (data.startsWith('approve_')) {
       const userId = data.replace('approve_', '');
       const targetUser = await getUser(userId);
