@@ -195,41 +195,35 @@ ${messageText}
     }
 
     // ==================== /CHANGES ====================
-    if (text === '/changes') {
-      if (!checkRateLimit(userId, '/changes')) return;
+ // /changes
+if (text === '/changes') {
+  if (!checkRateLimit(userId, '/changes')) return;
 
-      const monitoringCodes = await getUserMonitoringProducts(userId);
-      
-      if (monitoringCodes.length === 0) {
-        await sendMessage(chatId, '📭 У вас нет товаров в мониторинге');
-        return;
-      }
+  const monitoringCodes = await getUserMonitoringProducts(userId);
+  console.log('🔍 [messageHandler] monitoringCodes для userId', userId, ':', monitoringCodes);
+  console.log('🔍 [messageHandler] содержит 7093?', monitoringCodes.includes('7093'));
+  
+  if (monitoringCodes.length === 0) {
+    await sendMessage(chatId, '📭 У вас нет товаров в мониторинге');
+    return;
+  }
 
-      const loadingMsg = await sendMessage(chatId, '⏳ Загружаю изменения цен...');
-      
-      if (!loadingMsg || !loadingMsg.message_id) {
-        return;
-      }
-      
-      try {
-        const allChanges = await getPriceChanges();
-        const changes = allChanges.filter(c => monitoringCodes.includes(c.product_code));
-
-        if (!changes.length) {
-          await editMessageText(chatId, loadingMsg.message_id, '📭 Сегодня нет изменений по вашим товарам');
-          return;
-        }
-
-        const message = formatChangesList(changes, '📊 ИЗМЕНЕНИЯ ЦЕН В МОНИТОРИНГЕ');
-        await editMessageText(chatId, loadingMsg.message_id, message);
-        
-      } catch (err) {
-        Logger.error('Ошибка при получении изменений', err, { userId });
-        await editMessageText(chatId, loadingMsg.message_id, '❌ Произошла ошибка при загрузке изменений цен');
-      }
-      
-      return;
-    }
+  const loadingMsg = await sendMessage(chatId, '⏳ Загружаю изменения цен...');
+  
+  if (!loadingMsg || !loadingMsg.message_id) {
+    return;
+  }
+  
+  try {
+    const allChanges = await getPriceChanges();
+    console.log('🔍 [messageHandler] allChanges коды:', allChanges.map(c => c.product_code));
+    
+    const changes = allChanges.filter(c => monitoringCodes.includes(c.product_code));
+    console.log('🔍 [messageHandler] filteredChanges коды:', changes.map(c => c.product_code));
+    
+    // ... остальной код
+  }
+}
 
     // ==================== /HELP ====================
     if (text === '/help') {
