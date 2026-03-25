@@ -119,7 +119,7 @@ export async function handleAdminCallback(query) {
         await sendMessage(targetUser.chat_id, 
           `✅ <b>Регистрация подтверждена!</b>\n\n` +
           `📧 На ваш email <code>${email}</code> отправлен временный пароль.\n\n` +
-          `🔗 <b>Войти на сайт:</b> https://price-hunter-bel.vercel.app/login\n\n` +
+          `🔗 <b>Войти на сайт:</b> https://pricehunter-by.vercel.app/login\n\n` +
           `📋 <b>Ваш временный пароль:</b> <code>${tempPassword}</code>\n\n` +
           `⏰ Срок действия пароля: 72 часа\n\n` +
           `⚠️ <b>Обязательно смените пароль после первого входа!</b>\n\n` +
@@ -141,7 +141,7 @@ export async function handleAdminCallback(query) {
           `✅ <b>Регистрация подтверждена!</b>\n\n` +
           `Ваш email: <code>${email}</code>\n` +
           `Вы уже зарегистрированы на сайте. Используйте свой пароль для входа.\n\n` +
-          `🔗 <a href="https://price-hunter-bel.vercel.app/login">Войти на сайт</a>\n\n` +
+          `🔗 <a href="https://pricehunter-by.vercel.app/login">Войти на сайт</a>\n\n` +
           `📋 <b>Команды бота:</b>\n` +
           `/changes - изменения цен\n` +
           `/status - статус\n` +

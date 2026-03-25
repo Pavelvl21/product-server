@@ -32,7 +32,7 @@ app.use(helmet({
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   const allowedOrigins = [
-    'https://price-hunter-bel.vercel.app',
+    'https://pricehunter-by.vercel.app',
     /^https:\/\/.*\.app\.github\.dev$/,
     /^http:\/\/localhost:\d+$/
   ];
