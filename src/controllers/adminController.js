@@ -36,8 +36,8 @@ export async function getBotProducts(req, res, next) {
     const products = await db.execute('SELECT * FROM products_info');
     
     const today = new Date().toISOString().split('T')[0];
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     
+    // Получаем сегодняшние цены
     const todayPrices = await db.execute({
       sql: `
         SELECT ph.product_code, ph.price
@@ -52,18 +52,19 @@ export async function getBotProducts(req, res, next) {
       args: [today]
     });
     
-    const yesterdayPrices = await db.execute({
+    // Получаем последние цены перед сегодняшним днем (если нет цены за вчера)
+    const previousPrices = await db.execute({
       sql: `
         SELECT ph.product_code, ph.price
         FROM price_history ph
         INNER JOIN (
           SELECT product_code, MAX(updated_at) as max_date
           FROM price_history
-          WHERE DATE(updated_at) = ?
+          WHERE DATE(updated_at) < ?
           GROUP BY product_code
         ) latest ON ph.product_code = latest.product_code AND ph.updated_at = latest.max_date
       `,
-      args: [yesterday]
+      args: [today]
     });
     
     const todayMap = {};
@@ -71,9 +72,9 @@ export async function getBotProducts(req, res, next) {
       todayMap[row.product_code] = row.price;
     });
     
-    const yesterdayMap = {};
-    yesterdayPrices.rows.forEach(row => {
-      yesterdayMap[row.product_code] = row.price;
+    const previousMap = {};
+    previousPrices.rows.forEach(row => {
+      previousMap[row.product_code] = row.price;
     });
     
     const result = products.rows.map(product => ({
@@ -87,14 +88,17 @@ export async function getBotProducts(req, res, next) {
       monthly_payment: product.monthly_payment,
       no_overpayment_max_months: product.no_overpayment_max_months,
       priceToday: todayMap[product.code] || null,
-      priceYesterday: yesterdayMap[product.code] || null,
+      priceYesterday: previousMap[product.code] || null,  // теперь это последняя известная цена
       lastUpdate: product.last_update
     }));
     
-    res.json({ today, yesterday, products: result });
+    res.json({ 
+      today,
+      products: result 
+    });
     
   } catch (err) {
-    Logger.error('Ошибка в getBotProducts', err);
+    Logger.error('❌ Ошибка в /api/bot/products:', err);
     next(err);
   }
 }
