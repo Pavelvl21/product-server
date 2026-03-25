@@ -220,9 +220,21 @@ if (text === '/changes') {
     
     const changes = allChanges.filter(c => monitoringCodes.includes(c.product_code));
     console.log('🔍 [messageHandler] filteredChanges коды:', changes.map(c => c.product_code));
+
+    if (!changes.length) {
+      await editMessageText(chatId, loadingMsg.message_id, '📭 Сегодня нет изменений по вашим товарам');
+      return;
+    }
+
+    const message = formatChangesList(changes, '📊 ИЗМЕНЕНИЯ ЦЕН В МОНИТОРИНГЕ');
+    await editMessageText(chatId, loadingMsg.message_id, message);
     
-    // ... остальной код
+  } catch (err) {
+    Logger.error('Ошибка при получении изменений', err, { userId });
+    await editMessageText(chatId, loadingMsg.message_id, '❌ Произошла ошибка при загрузке изменений цен');
   }
+  
+  return;
 }
 
     // ==================== /HELP ====================
