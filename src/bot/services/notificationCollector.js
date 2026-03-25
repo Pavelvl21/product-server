@@ -73,8 +73,8 @@ class NotificationCollector {
     Logger.info(`Отправка ${this.notifications.size} пакетов уведомлений`);
     
     // Импортируем динамически, чтобы избежать циклических зависимостей
-    const { sendMessage } = await import('../bot/index.js');
-    const { formatChangesList } = await import('../bot/services/messageFormatter.js');
+    const { sendMessage } = await import('../index.js');
+    const { formatChangesList } = await import('./messageFormatter.js');
     
     for (const [userId, data] of this.notifications.entries()) {
       const { chatId, changes } = data;
@@ -82,21 +82,15 @@ class NotificationCollector {
       if (changes.length === 0) continue;
       
       // Сортируем изменения (повышения сверху, снижения снизу, по убыванию)
-const sortedChanges = [...changes].sort((a, b) => {
-  // Сначала по типу (повышения выше, снижения ниже)
-  if (a.isDecrease !== b.isDecrease) {
-    return a.isDecrease ? 1 : -1;
-  }
-  
-  // Для повышений: от большего к меньшему
-  if (!a.isDecrease) {
-    return b.change - a.change;
-  }
-  
-  // Для снижений: от меньшего к большему (по модулю)
-  // То есть -1% должен быть выше, чем -5%
-  return Math.abs(a.change) - Math.abs(b.change);
-});
+      const sortedChanges = [...changes].sort((a, b) => {
+        if (a.isDecrease !== b.isDecrease) {
+          return a.isDecrease ? 1 : -1;
+        }
+        if (!a.isDecrease) {
+          return b.change - a.change;
+        }
+        return Math.abs(a.change) - Math.abs(b.change);
+      });
       
       const message = formatChangesList(sortedChanges, '🔔 ИЗМЕНЕНИЯ В ВАШЕМ МОНИТОРИНГЕ');
       
