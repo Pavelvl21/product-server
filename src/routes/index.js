@@ -30,6 +30,7 @@ router.get('/api/products/paginated', authenticateToken, productController.getPa
 router.get('/api/products/catalog', authenticateToken, productController.getCatalogProducts);
 router.get('/api/products/check/:code', authenticateToken, productController.checkProduct);
 router.post('/api/products/add-full', authenticateToken, productController.addFullProduct);
+router.get('/api/products/history', authenticateToken, productController.getProductsWithDateFilter);
 
 router.get('/api/codes', authenticateToken, productController.getCodes);
 router.post('/api/codes', authenticateToken, validate(schemas.addCode), productController.addCode);
