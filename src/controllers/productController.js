@@ -520,3 +520,223 @@ export async function addFullProduct(req, res, next) {
     next(err);
   }
 }
+
+// ПОЛУЧЕНИЕ ТОВАРОВ С ФИЛЬТРОМ ПО ДАТЕ (14ДН ПО УМОЛЧАНИЮ)
+export async function getProductsWithDateFilter(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const { 
+      from, 
+      to, 
+      code,
+      limit = 24, 
+      offset = 0, 
+      categories, 
+      brands, 
+      search, 
+      sort = 'default' 
+    } = req.query;
+    
+    // Определяем диапазон дат
+    let startDate, endDate;
+    
+    if (from && to) {
+      startDate = from;
+      endDate = to;
+    } else {
+      // По умолчанию последние 14 дней
+      endDate = new Date().toISOString().split('T')[0];
+      startDate = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    }
+    
+    console.log(`📊 Запрос истории цен: ${startDate} - ${endDate}, code: ${code || 'все'}`);
+    
+    // Получаем все даты в диапазоне
+    const datesResult = await db.execute({
+      sql: `
+        SELECT DISTINCT DATE(updated_at) as d
+        FROM price_history
+        WHERE DATE(updated_at) BETWEEN ? AND ?
+        ORDER BY d ASC
+      `,
+      args: [startDate, endDate]
+    });
+    
+    const allDates = datesResult.rows.map(row => row.d);
+    
+    // Если указан конкретный товар — возвращаем только его историю
+    if (code) {
+      const product = await db.execute({
+        sql: 'SELECT * FROM products_info WHERE code = ?',
+        args: [code]
+      });
+      
+      if (product.rows.length === 0) {
+        return res.status(404).json({ error: 'Товар не найден' });
+      }
+      
+      const history = await db.execute({
+        sql: `
+          SELECT price, updated_at
+          FROM price_history
+          WHERE product_code = ?
+            AND DATE(updated_at) BETWEEN ? AND ?
+          ORDER BY updated_at ASC
+        `,
+        args: [code, startDate, endDate]
+      });
+      
+      // Формируем цены по датам
+      const prices = {};
+      const priceHistory = history.rows.map(row => ({
+        date: row.updated_at,
+        price: row.price
+      }));
+      
+      allDates.forEach(date => {
+        const dayRecords = priceHistory.filter(h => h.date.startsWith(date));
+        if (dayRecords.length > 0) {
+          const last = dayRecords.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+          prices[date] = last.price;
+        } else {
+          const prev = priceHistory.filter(h => h.date < date)
+            .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+          if (prev) prices[date] = prev.price;
+        }
+      });
+      
+      return res.json({
+        code: product.rows[0].code,
+        name: product.rows[0].name,
+        link: product.rows[0].link,
+        category: product.rows[0].category || 'Товары',
+        brand: product.rows[0].brand || 'Без бренда',
+        base_price: product.rows[0].base_price,
+        packPrice: product.rows[0].packPrice,
+        monthly_payment: product.rows[0].monthly_payment,
+        no_overpayment_max_months: product.rows[0].no_overpayment_max_months,
+        currentPrice: product.rows[0].last_price,
+        lastUpdate: product.rows[0].last_update,
+        prices: prices,
+        priceHistory: priceHistory,
+        dates: allDates,
+        from: startDate,
+        to: endDate
+      });
+    }
+    
+    // Если код не указан — возвращаем все товары с пагинацией
+    const builder = new SafeQueryBuilder();
+    
+    builder.addInCondition('p.category', categories);
+    builder.addInCondition('p.brand', brands);
+    if (search && search.trim() !== '') {
+      const searchLower = search.toLowerCase().trim();
+      builder.addCondition(`(p.name_lower LIKE ? OR p.code LIKE ?)`, `%${searchLower}%`, `%${search}%`);
+    }
+    
+    const { whereClause, params } = builder.buildWhere();
+    const orderClause = getOrderByClause(sort);
+    
+    // Получаем товары с пагинацией
+    const products = await db.execute({
+      sql: `
+        SELECT 
+          p.*,
+          CASE WHEN us.user_id IS NOT NULL THEN 1 ELSE 0 END as inMonitoring
+        FROM products_info p
+        LEFT JOIN user_shelf us ON p.code = us.product_code AND us.user_id = ?
+        ${whereClause}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `,
+      args: [userId, ...params, limit, offset]
+    });
+    
+    // Получаем историю цен для этих товаров за указанный период
+    if (products.rows.length > 0) {
+      const codes = products.rows.map(p => p.code);
+      const placeholders = codes.map(() => '?').join(',');
+      
+      const history = await db.execute({
+        sql: `
+          SELECT product_code, price, updated_at
+          FROM price_history
+          WHERE product_code IN (${placeholders})
+            AND DATE(updated_at) BETWEEN ? AND ?
+          ORDER BY product_code, updated_at ASC
+        `,
+        args: [...codes, startDate, endDate]
+      });
+      
+      // Группируем историю
+      const historyByProduct = {};
+      history.rows.forEach(row => {
+        if (!historyByProduct[row.product_code]) {
+          historyByProduct[row.product_code] = [];
+        }
+        historyByProduct[row.product_code].push({
+          date: row.updated_at,
+          price: row.price
+        });
+      });
+      
+      // Формируем результат с ценами по датам
+      products.rows = products.rows.map(p => {
+        const productHistory = historyByProduct[p.code] || [];
+        const prices = {};
+        
+        allDates.forEach(date => {
+          const dayRecords = productHistory.filter(h => h.date.startsWith(date));
+          if (dayRecords.length > 0) {
+            const last = dayRecords.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+            prices[date] = last.price;
+          } else {
+            const prev = productHistory.filter(h => h.date < date)
+              .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+            if (prev) prices[date] = prev.price;
+          }
+        });
+        
+        return {
+          code: p.code,
+          name: p.name,
+          link: p.link,
+          category: p.category || 'Товары',
+          brand: p.brand || 'Без бренда',
+          base_price: p.base_price,
+          packPrice: p.packPrice,
+          monthly_payment: p.monthly_payment,
+          no_overpayment_max_months: p.no_overpayment_max_months,
+          currentPrice: p.last_price,
+          lastUpdate: p.last_update,
+          prices: prices,
+          priceHistory: productHistory,
+          inMonitoring: p.inMonitoring === 1
+        };
+      });
+    }
+    
+    // Получаем общее количество
+    const countResult = await db.execute({
+      sql: `SELECT COUNT(*) as count FROM products_info p ${whereClause}`,
+      args: params
+    });
+    
+    const totalProductsResult = await db.execute('SELECT COUNT(*) as count FROM products_info');
+    
+    res.json({
+      products: products.rows,
+      dates: allDates,
+      total: countResult.rows[0].count,
+      totalProducts: totalProductsResult.rows[0].count,
+      from: startDate,
+      to: endDate,
+      hasMore: offset + limit < countResult.rows[0].count
+    });
+    
+  } catch (err) {
+    Logger.error('Ошибка получения истории цен', err);
+    next(err);
+  }
+}
