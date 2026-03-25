@@ -25,43 +25,8 @@ export async function getPriceChanges() {
     const data = await getProductsFromServer();
     if (!data?.products) return [];
     
-    console.log('🔍 [getPriceChanges] Всего товаров от сервера:', data.products.length);
-    
-    // Логируем товар 7093 отдельно
-    const targetProduct = data.products.find(p => p.code === '7093');
-    if (targetProduct) {
-      console.log('🔍 [getPriceChanges] Товар 7093:', {
-        code: targetProduct.code,
-        name: targetProduct.name,
-        priceToday: targetProduct.priceToday,
-        priceYesterday: targetProduct.priceYesterday,
-        diff: targetProduct.priceToday - targetProduct.priceYesterday,
-        absDiff: Math.abs(targetProduct.priceToday - targetProduct.priceYesterday)
-      });
-    } else {
-      console.log('🔍 [getPriceChanges] Товар 7093 не найден в ответе сервера');
-    }
-    
     const changes = data.products
-      .filter(p => {
-        const hasToday = p.priceToday !== null && p.priceToday !== undefined;
-        const hasYesterday = p.priceYesterday !== null && p.priceYesterday !== undefined;
-        const diff = Math.abs(p.priceToday - p.priceYesterday);
-        const isValid = hasToday && hasYesterday && diff > 0.01;
-        
-        if (p.code === '7093') {
-          console.log('🔍 [getPriceChanges] Фильтр для 7093:', {
-            hasToday,
-            hasYesterday,
-            diff,
-            isValid,
-            priceToday: p.priceToday,
-            priceYesterday: p.priceYesterday
-          });
-        }
-        
-        return isValid;
-      })
+      .filter(p => p.priceToday && p.priceYesterday && Math.abs(p.priceToday - p.priceYesterday) > 0.01)
       .map(p => ({
         product_code: p.code,
         product_name: p.name,
@@ -79,17 +44,21 @@ export async function getPriceChanges() {
         isDecrease: p.priceToday < p.priceYesterday
       }));
     
-    console.log('🔍 [getPriceChanges] Найдено изменений:', changes.length);
-    console.log('🔍 [getPriceChanges] Коды товаров с изменениями:', changes.map(c => c.product_code));
-    
-    // Сортировка
+    // Сортировка: сначала повышения (от большего к меньшему), затем снижения (от большего к меньшему)
+    // Повышения вверху, снижения внизу
     changes.sort((a, b) => {
+      // Сначала по типу (повышения выше)
       if (a.isDecrease !== b.isDecrease) {
-        return a.isDecrease ? 1 : -1;
+        return a.isDecrease ? 1 : -1;  // повышения (false) идут выше, снижения (true) ниже
       }
+      // Внутри группы: по абсолютному значению изменения (от большего к меньшему)
+      // Для повышений: большее повышение выше
+      // Для снижений: большее снижение (по модулю) ниже (т.е. внизу списка)
       if (!a.isDecrease) {
+        // Повышения: от большего к меньшему
         return b.change - a.change;
       } else {
+        // Снижения: от большего к меньшему по модулю (самое сильное снижение внизу)
         return Math.abs(a.change) - Math.abs(b.change);
       }
     });
