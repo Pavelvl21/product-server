@@ -3,6 +3,7 @@ import Logger from '../../../src/services/logger.js';
 
 export async function getProductsFromServer() {
   const url = `${config.API_URL}/api/bot/products`;
+  console.log('🔍 Запрашиваемый URL:', url);  // ← добавьте эту строку
   
   try {
     const response = await fetch(url, {
