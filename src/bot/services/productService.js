@@ -9,6 +9,7 @@ export async function getProductsFromServer() {
       headers: { 'x-bot-key': config.SECRET_KEY },
       timeout: 10000
     });
+    console.log('📡 Статус ответа:', response.status);
     
     if (!response.ok) return null;
     return await response.json();
