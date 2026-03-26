@@ -52,6 +52,8 @@ async function saveProductData(product, timestamp) {
     });
 
     const lastPrice = lastRecord.rows[0]?.price;
+    const lastDate = lastRecord.rows[0]?.updated_at?.split(' ')[0];
+    const currentHour = now.getUTCHours();
 
     // Проверяем, есть ли товар в мониторинге и получаем подписчиков
     const monitoringCheck = await db.execute({
@@ -68,7 +70,14 @@ async function saveProductData(product, timestamp) {
     const priceChanged = lastPrice !== undefined && Math.abs(realPrice - lastPrice) > 0.01;
     stats.priceChanged = priceChanged;
 
-    const shouldInsertPrice = priceChanged || lastPrice === undefined;
+    // Записываем, если:
+    // 1. Цена изменилась
+    // 2. Это первая запись для товара
+    // 3. Это запись в 00:00 UTC (ежедневная фиксация) и сегодня ещё не было записи
+    const isMidnightRecord = currentHour === 0 && lastDate !== today;
+    const needDailyRecord = isMidnightRecord && !priceChanged;
+    
+    const shouldInsertPrice = priceChanged || lastPrice === undefined || needDailyRecord;
     
     if (shouldInsertPrice) {
       await insertPriceRecord(code, product.name, realPrice, now);
