@@ -534,7 +534,8 @@ export async function getProductsWithDateFilter(req, res, next) {
       categories, 
       brands, 
       search, 
-      sort = 'default' 
+      sort = 'default',
+      not_monitoring  // ← новый параметр для исключения избранных товаров
     } = req.query;
     
     // Определяем диапазон дат
@@ -548,7 +549,7 @@ export async function getProductsWithDateFilter(req, res, next) {
       startDate = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     }
     
-    console.log(`📊 Запрос истории цен: ${startDate} - ${endDate}, code: ${code || 'все'}`);
+    console.log(`📊 Запрос истории цен: ${startDate} - ${endDate}, code: ${code || 'все'}, not_monitoring: ${not_monitoring || 'false'}`);
     
     // Получаем все даты в диапазоне
     const datesResult = await db.execute({
@@ -629,6 +630,12 @@ export async function getProductsWithDateFilter(req, res, next) {
     
     builder.addInCondition('p.category', categories);
     builder.addInCondition('p.brand', brands);
+    
+    // ✅ НОВАЯ ЛОГИКА: исключаем товары в избранном
+    if (not_monitoring === 'true') {
+      builder.addCondition(`p.code NOT IN (SELECT product_code FROM user_shelf WHERE user_id = ?)`, userId);
+    }
+    
     if (search && search.trim() !== '') {
       const searchLower = search.toLowerCase().trim();
       builder.addCondition(`(p.name_lower LIKE ? OR p.code LIKE ?)`, `%${searchLower}%`, `%${search}%`);
