@@ -521,7 +521,7 @@ export async function addFullProduct(req, res, next) {
   }
 }
 
-// ПОЛУЧЕНИЕ ТОВАРОВ С ФИЛЬТРОМ ПО ДАТЕ (14ДН ПО УМОЛЧАНИЮ)
+// ПОЛУЧЕНИЕ ТОВАРОВ С ФИЛЬТРОМ ПО ДАТЕ (14ДН ПО)
 export async function getProductsWithDateFilter(req, res, next) {
   try {
     const userId = req.user.id;
@@ -539,7 +539,6 @@ export async function getProductsWithDateFilter(req, res, next) {
     
     // Определяем диапазон дат
     let startDate, endDate;
-    
     if (from && to) {
       startDate = from;
       endDate = to;
@@ -638,6 +637,17 @@ export async function getProductsWithDateFilter(req, res, next) {
     const { whereClause, params } = builder.buildWhere();
     const orderClause = getOrderByClause(sort);
     
+    // Получаем общее количество товаров ПОСЛЕ ФИЛЬТРОВ (для total)
+    const countResult = await db.execute({
+      sql: `SELECT COUNT(*) as count FROM products_info p ${whereClause}`,
+      args: params
+    });
+    const totalFiltered = countResult.rows[0].count;
+    
+    // Общее количество товаров в системе (для totalProducts)
+    const totalProductsResult = await db.execute('SELECT COUNT(*) as count FROM products_info');
+    const totalAllProducts = totalProductsResult.rows[0].count;
+    
     // Получаем товары с пагинацией
     const products = await db.execute({
       sql: `
@@ -650,7 +660,7 @@ export async function getProductsWithDateFilter(req, res, next) {
         ${orderClause}
         LIMIT ? OFFSET ?
       `,
-      args: [userId, ...params, limit, offset]
+      args: [userId, ...params, parseInt(limit), parseInt(offset)]
     });
     
     // Получаем историю цен для этих товаров за указанный период
@@ -717,22 +727,14 @@ export async function getProductsWithDateFilter(req, res, next) {
       });
     }
     
-    // Получаем общее количество
-    const countResult = await db.execute({
-      sql: `SELECT COUNT(*) as count FROM products_info p ${whereClause}`,
-      args: params
-    });
-    
-    const totalProductsResult = await db.execute('SELECT COUNT(*) as count FROM products_info');
-    
     res.json({
       products: products.rows,
       dates: allDates,
-      total: countResult.rows[0].count,
-      totalProducts: totalProductsResult.rows[0].count,
+      total: totalFiltered,
+      totalProducts: totalAllProducts,
       from: startDate,
       to: endDate,
-      hasMore: offset + limit < countResult.rows[0].count
+      hasMore: parseInt(offset) + parseInt(limit) < totalFiltered
     });
     
   } catch (err) {
