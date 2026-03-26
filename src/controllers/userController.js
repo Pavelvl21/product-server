@@ -234,11 +234,30 @@ export async function getShelfPaginated(req, res, next) {
     const search = req.query.search;
     const sort = req.query.sort || 'default';
     
+    // Параметры дат (как в /products/history)
+    const { from, to, code } = req.query;
+    
+    // Определяем диапазон дат для истории
+    let startDate, endDate;
+    if (from && to) {
+      startDate = from;
+      endDate = to;
+    } else {
+      endDate = new Date().toISOString().split('T')[0];
+      startDate = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    }
+    
     const builder = new SafeQueryBuilder();
     
     builder.addCondition('us.user_id = ?', userId);
     builder.addInCondition('p.category', categories);
     builder.addInCondition('p.brand', brands);
+    
+    // Если указан код товара, фильтруем по нему
+    if (code) {
+      builder.addCondition('p.code = ?', code);
+    }
+    
     if (search && search.trim() !== '') {
       const searchLower = search.toLowerCase().trim();
       builder.addCondition(`(p.name_lower LIKE ? OR p.code LIKE ?)`, `%${searchLower}%`, `%${search}%`);
@@ -259,6 +278,7 @@ export async function getShelfPaginated(req, res, next) {
       orderClause = 'ORDER BY us.added_at DESC, p.code';
     }
     
+    // Получаем товары с пагинацией
     const products = await db.execute({
       sql: `
         SELECT 
@@ -294,9 +314,10 @@ export async function getShelfPaginated(req, res, next) {
       args: params
     });
     
-    // ✅ Общее количество товаров в системе
+    // Общее количество товаров в системе (для Header)
     const totalProductsCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
     
+    // Получаем историю цен за указанный период для каждого товара
     if (products.rows.length > 0) {
       const codes = products.rows.map(p => p.code);
       const placeholders = codes.map(() => '?').join(',');
@@ -306,9 +327,10 @@ export async function getShelfPaginated(req, res, next) {
           SELECT product_code, price, updated_at
           FROM price_history
           WHERE product_code IN (${placeholders})
+            AND DATE(updated_at) BETWEEN ? AND ?
           ORDER BY product_code, updated_at ASC
         `,
-        args: codes
+        args: [...codes, startDate, endDate]
       });
       
       const historyByProduct = {};
@@ -322,17 +344,49 @@ export async function getShelfPaginated(req, res, next) {
         });
       });
       
-      products.rows = products.rows.map(p => ({
-        ...p,
-        priceHistory: historyByProduct[p.code] || [],
-        currentPrice: p.last_price ? parseFloat(p.last_price) : null
-      }));
+      // Получаем все даты в диапазоне
+      const datesResult = await db.execute({
+        sql: `
+          SELECT DISTINCT DATE(updated_at) as d
+          FROM price_history
+          WHERE DATE(updated_at) BETWEEN ? AND ?
+          ORDER BY d ASC
+        `,
+        args: [startDate, endDate]
+      });
+      const allDates = datesResult.rows.map(row => row.d);
+      
+      products.rows = products.rows.map(p => {
+        const productHistory = historyByProduct[p.code] || [];
+        const prices = {};
+        
+        allDates.forEach(date => {
+          const dayRecords = productHistory.filter(h => h.date.startsWith(date));
+          if (dayRecords.length > 0) {
+            const last = dayRecords.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+            prices[date] = last.price;
+          } else {
+            const prev = productHistory.filter(h => h.date < date)
+              .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+            if (prev) prices[date] = prev.price;
+          }
+        });
+        
+        return {
+          ...p,
+          priceHistory: productHistory,
+          prices: prices,
+          currentPrice: p.last_price ? parseFloat(p.last_price) : null
+        };
+      });
     }
     
     res.json({
       products: products.rows,
       total: countResult.rows[0].count,
       totalProducts: totalProductsCount.rows[0].count,
+      from: startDate,
+      to: endDate,
       hasMore: offset + limit < countResult.rows[0].count
     });
     
