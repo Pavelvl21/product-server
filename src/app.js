@@ -34,7 +34,8 @@ app.use((req, res, next) => {
   const allowedOrigins = [
     'https://pricehunter-by.vercel.app',
     /^https:\/\/.*\.app\.github\.dev$/,
-    /^http:\/\/localhost:\d+$/
+    /^http:\/\/localhost:\d+$/,
+    'https://price-hunter-git-styling-pavelvl21s-projects.vercel.app'
   ];
   
   const isAllowed = allowedOrigins.some(pattern => {
