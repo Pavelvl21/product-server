@@ -66,5 +66,7 @@ router.post('/api/telegram/webhook', telegramController.webhook);
 
 // ==================== РАЗОВЫЙ ЭНДПОИНТ ДЛЯ TELEGRAM (из setupBotEndpoints) ====================
 router.get('/api/telegram/users', authenticateToken, telegramController.getUsers);
+//======ДОБАВЛЕНИЕ ТОВАРА В БД =========
+router.post('/api/products/fetch-and-add', authenticateToken, productController.fetchAndAddProduct);
 
 export default router;
