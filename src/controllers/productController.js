@@ -521,6 +521,175 @@ export async function addFullProduct(req, res, next) {
   }
 }
 
+export async function fetchAndAddProduct(req, res, next) {
+  try {
+    const { code } = req.body;
+    
+    if (!code) {
+      return res.status(400).json({ error: 'Код товара обязателен' });
+    }
+    
+    // 1. Проверяем, есть ли товар уже в БД
+    const existingProduct = await db.execute({
+      sql: 'SELECT code FROM products_info WHERE code = ?',
+      args: [code]
+    });
+    
+    if (existingProduct.rows.length > 0) {
+      // Товар уже есть — возвращаем как /api/products/check/:code
+      return redirectToCheck(code, res);
+    }
+    
+    // 2. Получаем данные с 21vek
+    const productData = await fetchFrom21vek(code);
+    if (!productData) {
+      return res.status(404).json({ error: 'Товар не найден на 21vek.by' });
+    }
+    
+    // 3. Добавляем товар в БД
+    await addProductToDatabase(productData);
+    
+    // 4. Возвращаем данные как /api/products/check/:code
+    await returnProductData(code, res);
+    
+  } catch (err) {
+    Logger.error('Ошибка fetch-and-add', err);
+    next(err);
+  }
+}
+
+// Вспомогательная функция: получить данные с 21vek
+async function fetchFrom21vek(code) {
+  try {
+    // Запрос к product-card-mini
+    const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
+      method: "POST",
+      headers: { "accept": "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ ids: [parseInt(code)], isAdult: false, limit: 100 })
+    });
+    
+    if (!response.ok) return null;
+    const data = await response.json();
+    const product = data.data?.productCards?.[0];
+    if (!product) return null;
+    
+    // Запрос к partly-pay
+    const price = parseFloat(product.packPrice || product.price);
+    const partlyResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
+      method: "POST",
+      headers: { "accept": "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ data: { products: [{ code: parseInt(code), price }] } })
+    });
+    
+    if (partlyResponse.ok) {
+      const partlyData = await partlyResponse.json();
+      if (partlyData.data?.[0]) {
+        product.monthly_payment = partlyData.data[0].monthly_payment;
+        product.no_overpayment_max_months = partlyData.data[0].no_overpayment_max_months;
+      }
+    }
+    
+    return product;
+  } catch (err) {
+    console.error('Ошибка fetchFrom21vek:', err);
+    return null;
+  }
+}
+
+// Вспомогательная функция: добавить товар в БД
+async function addProductToDatabase(product) {
+  const code = product.id.toString();
+  const realPrice = parseFloat(product.packPrice || product.price);
+  const basePrice = product.price ? parseFloat(product.price) : null;
+  const packPrice = product.packPrice ? parseFloat(product.packPrice) : null;
+  const category = product.categories?.length ? product.categories[product.categories.length - 1].name : 'Товары';
+  const brand = product.producerName || 'Без бренда';
+  const now = new Date();
+  const nameLower = product.name.toLowerCase();
+  
+  // Добавляем в product_codes
+  await db.execute({
+    sql: 'INSERT INTO product_codes (code) VALUES (?) ON CONFLICT DO NOTHING',
+    args: [code]
+  });
+  
+  // Добавляем в products_info
+  await db.execute({
+    sql: `
+      INSERT INTO products_info (
+        code, name, last_price, base_price, packPrice,
+        monthly_payment, no_overpayment_max_months,
+        link, category, brand, last_update, name_lower
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(code) DO UPDATE SET
+        name = excluded.name,
+        last_price = excluded.last_price,
+        base_price = excluded.base_price,
+        packPrice = excluded.packPrice,
+        monthly_payment = excluded.monthly_payment,
+        no_overpayment_max_months = excluded.no_overpayment_max_months,
+        link = excluded.link,
+        category = excluded.category,
+        brand = excluded.brand,
+        last_update = excluded.last_update,
+        name_lower = excluded.name_lower
+    `,
+    args: [
+      code, product.name, realPrice, basePrice, packPrice,
+      product.monthly_payment, product.no_overpayment_max_months,
+      product.link || '', category, brand,
+      now.toISOString().slice(0, 19).replace('T', ' '),
+      nameLower
+    ]
+  });
+  
+  // Добавляем первую запись в price_history
+  await db.execute({
+    sql: `INSERT INTO price_history (product_code, product_name, price, updated_at, no_overpayment_max_months)
+          VALUES (?, ?, ?, ?, ?)`,
+    args: [code, product.name, realPrice, now.toISOString().slice(0, 19).replace('T', ' '), product.no_overpayment_max_months]
+  });
+}
+
+// Вспомогательная функция: вернуть данные как /api/products/check/:code
+async function returnProductData(code, res) {
+  const product = await db.execute({
+    sql: 'SELECT * FROM products_info WHERE code = ?',
+    args: [code]
+  });
+  
+  if (product.rows.length === 0) {
+    return res.status(404).json({ error: 'Товар не найден' });
+  }
+  
+  const history = await db.execute({
+    sql: 'SELECT price, updated_at, no_overpayment_max_months FROM price_history WHERE product_code = ? ORDER BY updated_at ASC',
+    args: [code]
+  });
+  
+  res.json({
+    exists: true,
+    product: {
+      code: product.rows[0].code,
+      name: product.rows[0].name,
+      link: product.rows[0].link,
+      category: product.rows[0].category || 'Товары',
+      brand: product.rows[0].brand || 'Без бренда',
+      base_price: product.rows[0].base_price,
+      packPrice: product.rows[0].packPrice,
+      monthly_payment: product.rows[0].monthly_payment,
+      no_overpayment_max_months: product.rows[0].no_overpayment_max_months,
+      currentPrice: product.rows[0].last_price,
+      lastUpdate: product.rows[0].last_update,
+      priceHistory: history.rows.map(row => ({
+        date: row.updated_at,
+        price: row.price,
+        no_overpayment_max_months: row.no_overpayment_max_months
+      }))
+    }
+  });
+}
+
 // ПОЛУЧЕНИЕ ТОВАРОВ С ФИЛЬТРОМ ПО ДАТЕ (14ДН ПО)
 export async function getProductsWithDateFilter(req, res, next) {
   try {
