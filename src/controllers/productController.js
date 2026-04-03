@@ -524,78 +524,82 @@ export async function fetchAndAddProduct(req, res, next) {
   try {
     const { code } = req.body;
     
+    console.log('🔍 fetchAndAddProduct: Начало, code =', code);
+    
     if (!code) {
+      console.log('❌ fetchAndAddProduct: Код не передан');
       return res.status(400).json({ error: 'Код товара обязателен' });
     }
     
     // 1. Проверяем, есть ли товар уже в БД
+    console.log('🔍 fetchAndAddProduct: Проверяем существование товара в БД...');
     const existingProduct = await db.execute({
       sql: 'SELECT code FROM products_info WHERE code = ?',
       args: [code]
     });
     
     if (existingProduct.rows.length > 0) {
-      // Товар уже есть — возвращаем как /api/products/check/:code
+      console.log('✅ fetchAndAddProduct: Товар уже есть в БД, code =', code);
       return await returnProductData(code, res);
     }
     
     // 2. Получаем данные с 21vek
+    console.log('🔍 fetchAndAddProduct: Получаем данные с 21vek...');
     const productData = await fetchFrom21vek(code);
     if (!productData) {
+      console.log('❌ fetchAndAddProduct: Товар не найден на 21vek');
       return res.status(404).json({ error: 'Товар не найден на 21vek.by' });
     }
+    console.log('✅ fetchAndAddProduct: Данные получены, название:', productData.name);
     
     // 3. Добавляем товар в БД
+    console.log('🔍 fetchAndAddProduct: Добавляем товар в БД...');
     await addProductToDatabase(productData);
+    console.log('✅ fetchAndAddProduct: Товар добавлен в БД');
     
     // 4. Возвращаем данные
     await returnProductData(code, res);
     
   } catch (err) {
     console.error('❌ Ошибка fetch-and-add:', err);
+    console.error('❌ Стек ошибки:', err.stack);
     Logger.error('Ошибка fetch-and-add', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    res.status(500).json({ error: 'Внутренняя ошибка сервера', details: err.message });
   }
 }
 
 // Вспомогательная функция: получить данные с 21vek
 async function fetchFrom21vek(code) {
   try {
+    console.log('🔍 fetchFrom21vek: Запрашиваем код', code);
+    
     const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
       method: "POST",
       headers: { "accept": "application/json", "content-type": "application/json" },
       body: JSON.stringify({ ids: [parseInt(code)], isAdult: false, limit: 100 })
     });
     
-    if (!response.ok) return null;
-    const data = await response.json();
-    const product = data.data?.productCards?.[0];
-    if (!product) return null;
+    console.log('🔍 fetchFrom21vek: Статус ответа', response.status);
     
-    const price = parseFloat(product.packPrice || product.price);
-    
-    // Запрос к partly-pay
-    try {
-      const partlyResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
-        method: "POST",
-        headers: { "accept": "application/json", "content-type": "application/json" },
-        body: JSON.stringify({ data: { products: [{ code: parseInt(code), price }] } })
-      });
-      
-      if (partlyResponse.ok) {
-        const partlyData = await partlyResponse.json();
-        if (partlyData.data?.[0]) {
-          product.monthly_payment = partlyData.data[0].monthly_payment;
-          product.no_overpayment_max_months = partlyData.data[0].no_overpayment_max_months;
-        }
-      }
-    } catch (err) {
-      console.error('Ошибка получения рассрочки:', err);
+    if (!response.ok) {
+      console.log('❌ fetchFrom21vek: Ответ не OK', response.status);
+      return null;
     }
     
-    return product;
+    const data = await response.json();
+    console.log('🔍 fetchFrom21vek: data получен, productCards:', data.data?.productCards?.length);
+    
+    const product = data.data?.productCards?.[0];
+    if (!product) {
+      console.log('❌ fetchFrom21vek: product не найден');
+      return null;
+    }
+    
+    console.log('✅ fetchFrom21vek: product найден, id:', product.id, 'name:', product.name);
+    
+    // ... остальной код
   } catch (err) {
-    console.error('Ошибка fetchFrom21vek:', err);
+    console.error('❌ Ошибка fetchFrom21vek:', err);
     return null;
   }
 }
