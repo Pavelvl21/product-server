@@ -37,6 +37,10 @@ router.post('/api/codes', authenticateToken, validate(schemas.addCode), productC
 router.post('/api/codes/bulk', authenticateToken, validate(schemas.bulkAddCodes), productController.bulkAddCodes);
 router.delete('/api/codes/:code', authenticateToken, productController.deleteCode);
 
+//======ДОБАВЛЕНИЕ ТОВАРА В БД =========
+router.post('/api/products/fetch-and-add', authenticateToken, productController.fetchAndAddProduct);
+
+
 // ==================== ПОЛЬЗОВАТЕЛЬСКАЯ ПОЛКА ====================
 router.get('/api/user/shelf', authenticateToken, userController.getShelf);
 router.get('/api/user/shelf/paginated', authenticateToken, userController.getShelfPaginated);
