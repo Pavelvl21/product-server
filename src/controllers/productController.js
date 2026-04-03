@@ -573,37 +573,74 @@ async function fetchFrom21vek(code) {
   try {
     console.log('🔍 fetchFrom21vek: Запрашиваем код', code);
     
+    // ТОЧНО КАК В priceUpdater.js
     const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
-      method: "POST",
-      headers: { "accept": "application/json", "content-type": "application/json" },
-      body: JSON.stringify({ ids: [parseInt(code)], isAdult: false, limit: 100 })
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        ids: [parseInt(code)],
+        isAdult: false,
+        limit: 100
+      }),
+      method: "POST"
     });
-    
+
     console.log('🔍 fetchFrom21vek: Статус ответа', response.status);
     
     if (!response.ok) {
       console.log('❌ fetchFrom21vek: Ответ не OK', response.status);
       return null;
     }
-    
+
     const data = await response.json();
-    console.log('🔍 fetchFrom21vek: data получен, productCards:', data.data?.productCards?.length);
+    console.log('🔍 fetchFrom21vek: data получен');
     
-    const product = data.data?.productCards?.[0];
+    const product = data.data.productCards[0];
     if (!product) {
       console.log('❌ fetchFrom21vek: product не найден');
       return null;
     }
-    
+
     console.log('✅ fetchFrom21vek: product найден, id:', product.id, 'name:', product.name);
     
-    // ... остальной код
+    // Получаем рассрочку (как в priceUpdater.js)
+    try {
+      const partlyPayResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
+        method: "POST",
+        headers: {
+          "accept": "application/json",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ 
+          data: { 
+            products: [{
+              code: parseInt(code),
+              price: parseFloat(product.packPrice || product.price)
+            }]
+          } 
+        })
+      });
+
+      if (partlyPayResponse.ok) {
+        const partlyPayResult = await partlyPayResponse.json();
+        if (partlyPayResult.data && partlyPayResult.data[0]) {
+          product.monthly_payment = partlyPayResult.data[0].monthly_payment;
+          product.no_overpayment_max_months = partlyPayResult.data[0].no_overpayment_max_months;
+        }
+      }
+    } catch (error) {
+      console.log('⚠️ Ошибка получения рассрочки:', error.message);
+    }
+
+    return product;
+    
   } catch (err) {
     console.error('❌ Ошибка fetchFrom21vek:', err);
     return null;
   }
 }
-
 // Вспомогательная функция: добавить товар в БД
 async function addProductToDatabase(product) {
   const code = product.id.toString();
