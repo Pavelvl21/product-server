@@ -522,47 +522,59 @@ export async function addFullProduct(req, res, next) {
 }
 export async function fetchAndAddProduct(req, res, next) {
   try {
+    console.log('🚀 [fetchAndAddProduct] НАЧАЛО');
+    console.log('📦 [fetchAndAddProduct] req.body:', JSON.stringify(req.body, null, 2));
+    console.log('👤 [fetchAndAddProduct] userId:', req.user?.id);
+    
     const { code } = req.body;
     
-    console.log('🔍 fetchAndAddProduct: Начало, code =', code);
+    console.log('🔍 [fetchAndAddProduct] code =', code, 'тип:', typeof code);
     
     if (!code) {
-      console.log('❌ fetchAndAddProduct: Код не передан');
+      console.log('❌ [fetchAndAddProduct] Код не передан');
       return res.status(400).json({ error: 'Код товара обязателен' });
     }
     
     // 1. Проверяем, есть ли товар уже в БД
-    console.log('🔍 fetchAndAddProduct: Проверяем существование товара в БД...');
+    console.log('🔍 [fetchAndAddProduct] Проверяем существование товара в БД...');
     const existingProduct = await db.execute({
       sql: 'SELECT code FROM products_info WHERE code = ?',
       args: [code]
     });
     
+    console.log('📊 [fetchAndAddProduct] existingProduct.rows.length =', existingProduct.rows.length);
+    
     if (existingProduct.rows.length > 0) {
-      console.log('✅ fetchAndAddProduct: Товар уже есть в БД, code =', code);
+      console.log('✅ [fetchAndAddProduct] Товар уже есть в БД, возвращаем данные');
       return await returnProductData(code, res);
     }
     
     // 2. Получаем данные с 21vek
-    console.log('🔍 fetchAndAddProduct: Получаем данные с 21vek...');
+    console.log('🌐 [fetchAndAddProduct] Запрашиваем данные с 21vek...');
     const productData = await fetchFrom21vek(code);
+    
+    console.log('📦 [fetchAndAddProduct] productData =', productData ? 'получен' : 'null');
+    if (productData) {
+      console.log('📦 [fetchAndAddProduct] productData.id =', productData.id);
+      console.log('📦 [fetchAndAddProduct] productData.name =', productData.name);
+    }
+    
     if (!productData) {
-      console.log('❌ fetchAndAddProduct: Товар не найден на 21vek');
+      console.log('❌ [fetchAndAddProduct] Товар не найден на 21vek');
       return res.status(404).json({ error: 'Товар не найден на 21vek.by' });
     }
-    console.log('✅ fetchAndAddProduct: Данные получены, название:', productData.name);
     
     // 3. Добавляем товар в БД
-    console.log('🔍 fetchAndAddProduct: Добавляем товар в БД...');
-    await addProductToDatabase(productData);
-    console.log('✅ fetchAndAddProduct: Товар добавлен в БД');
+    console.log('💾 [fetchAndAddProduct] Добавляем товар в БД...');
+    await addProductToDatabase(productData, code);
+    console.log('✅ [fetchAndAddProduct] Товар добавлен в БД');
     
     // 4. Возвращаем данные
     await returnProductData(code, res);
     
   } catch (err) {
-    console.error('❌ Ошибка fetch-and-add:', err);
-    console.error('❌ Стек ошибки:', err.stack);
+    console.error('❌ [fetchAndAddProduct] ОШИБКА:', err);
+    console.error('❌ [fetchAndAddProduct] Стек:', err.stack);
     Logger.error('Ошибка fetch-and-add', err);
     res.status(500).json({ error: 'Внутренняя ошибка сервера', details: err.message });
   }
@@ -571,42 +583,52 @@ export async function fetchAndAddProduct(req, res, next) {
 // Вспомогательная функция: получить данные с 21vek
 async function fetchFrom21vek(code) {
   try {
-    console.log('🔍 fetchFrom21vek: Запрашиваем код', code);
+    console.log('🌐 [fetchFrom21vek] НАЧАЛО, code =', code, 'тип:', typeof code);
     
-    // ТОЧНО КАК В priceUpdater.js
+    const requestBody = {
+      ids: [parseInt(code)],
+      isAdult: false,
+      limit: 100
+    };
+    console.log('📤 [fetchFrom21vek] Тело запроса:', JSON.stringify(requestBody));
+    
     const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
       headers: {
         "accept": "application/json",
         "content-type": "application/json"
       },
-      body: JSON.stringify({
-        ids: [parseInt(code)],
-        isAdult: false,
-        limit: 100
-      }),
+      body: JSON.stringify(requestBody),
       method: "POST"
     });
 
-    console.log('🔍 fetchFrom21vek: Статус ответа', response.status);
+    console.log('📡 [fetchFrom21vek] Статус ответа:', response.status);
     
     if (!response.ok) {
-      console.log('❌ fetchFrom21vek: Ответ не OK', response.status);
+      console.log('❌ [fetchFrom21vek] Ответ не OK, статус:', response.status);
+      const errorText = await response.text();
+      console.log('❌ [fetchFrom21vek] Текст ошибки:', errorText);
       return null;
     }
 
     const data = await response.json();
-    console.log('🔍 fetchFrom21vek: data получен');
+    console.log('📦 [fetchFrom21vek] data получен, keys:', Object.keys(data));
     
-    const product = data.data.productCards[0];
+    const product = data.data?.productCards?.[0];
     if (!product) {
-      console.log('❌ fetchFrom21vek: product не найден');
+      console.log('❌ [fetchFrom21vek] product не найден в ответе');
+      console.log('📦 [fetchFrom21vek] data.data:', JSON.stringify(data.data, null, 2).substring(0, 500));
       return null;
     }
 
-    console.log('✅ fetchFrom21vek: product найден, id:', product.id, 'name:', product.name);
+    console.log('✅ [fetchFrom21vek] product найден');
+    console.log('📦 [fetchFrom21vek] product.id =', product.id);
+    console.log('📦 [fetchFrom21vek] product.name =', product.name);
+    console.log('📦 [fetchFrom21vek] product.price =', product.price);
+    console.log('📦 [fetchFrom21vek] product.packPrice =', product.packPrice);
     
-    // Получаем рассрочку (как в priceUpdater.js)
+    // Получаем рассрочку
     try {
+      console.log('💳 [fetchFrom21vek] Запрашиваем рассрочку...');
       const partlyPayResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
         method: "POST",
         headers: {
@@ -625,26 +647,45 @@ async function fetchFrom21vek(code) {
 
       if (partlyPayResponse.ok) {
         const partlyPayResult = await partlyPayResponse.json();
+        console.log('💳 [fetchFrom21vek] Рассрочка получена');
         if (partlyPayResult.data && partlyPayResult.data[0]) {
           product.monthly_payment = partlyPayResult.data[0].monthly_payment;
           product.no_overpayment_max_months = partlyPayResult.data[0].no_overpayment_max_months;
+          console.log('💳 [fetchFrom21vek] monthly_payment:', product.monthly_payment);
+          console.log('💳 [fetchFrom21vek] no_overpayment_max_months:', product.no_overpayment_max_months);
         }
+      } else {
+        console.log('⚠️ [fetchFrom21vek] Ошибка рассрочки, статус:', partlyPayResponse.status);
       }
     } catch (error) {
-      console.log('⚠️ Ошибка получения рассрочки:', error.message);
+      console.log('⚠️ [fetchFrom21vek] Ошибка получения рассрочки:', error.message);
     }
 
     return product;
     
   } catch (err) {
-    console.error('❌ Ошибка fetchFrom21vek:', err);
+    console.error('❌ [fetchFrom21vek] ОШИБКА:', err);
+    console.error('❌ [fetchFrom21vek] Стек:', err.stack);
     return null;
   }
 }
 // Вспомогательная функция: добавить товар в БД
-async function addProductToDatabase(product) {
-  const code = product.id.toString();
+async function addProductToDatabase(product, originalCode) {
+  console.log('💾 [addProductToDatabase] НАЧАЛО');
+  console.log('💾 [addProductToDatabase] originalCode =', originalCode, 'тип:', typeof originalCode);
+  console.log('💾 [addProductToDatabase] product =', product ? 'есть' : 'null');
+  
+  if (!product) {
+    console.error('❌ [addProductToDatabase] product = null');
+    throw new Error('product is null');
+  }
+  
+  const code = originalCode;
+  console.log('💾 [addProductToDatabase] code =', code);
+  
   const realPrice = parseFloat(product.packPrice || product.price);
+  console.log('💾 [addProductToDatabase] realPrice =', realPrice);
+  
   const basePrice = product.price ? parseFloat(product.price) : null;
   const packPrice = product.packPrice ? parseFloat(product.packPrice) : null;
   const category = product.categories?.length ? product.categories[product.categories.length - 1].name : 'Товары';
@@ -654,13 +695,19 @@ async function addProductToDatabase(product) {
   const monthly_payment = product.monthly_payment || null;
   const no_overpayment_max_months = product.no_overpayment_max_months || null;
   
+  console.log('💾 [addProductToDatabase] category =', category);
+  console.log('💾 [addProductToDatabase] brand =', brand);
+  console.log('💾 [addProductToDatabase] nameLower =', nameLower);
+  
   // Добавляем в product_codes
+  console.log('💾 [addProductToDatabase] Добавляем в product_codes...');
   await db.execute({
     sql: 'INSERT INTO product_codes (code) VALUES (?) ON CONFLICT DO NOTHING',
     args: [code]
   });
   
   // Добавляем в products_info
+  console.log('💾 [addProductToDatabase] Добавляем в products_info...');
   await db.execute({
     sql: `
       INSERT INTO products_info (
@@ -691,28 +738,38 @@ async function addProductToDatabase(product) {
   });
   
   // Добавляем первую запись в price_history
+  console.log('💾 [addProductToDatabase] Добавляем в price_history...');
   await db.execute({
-    sql: `INSERT INTO price_history (product_code, product_name, price, updated_at, no_overpayment_max_months)
-          VALUES (?, ?, ?, ?, ?)`,
-    args: [code, product.name, realPrice, now.toISOString().slice(0, 19).replace('T', ' '), no_overpayment_max_months]
+    sql: `INSERT INTO price_history (product_code, product_name, price, updated_at)
+          VALUES (?, ?, ?, ?)`,
+    args: [code, product.name, realPrice, now.toISOString().slice(0, 19).replace('T', ' ')]
   });
+  
+  console.log('✅ [addProductToDatabase] Товар успешно добавлен');
 }
 
 // Вспомогательная функция: вернуть данные как /api/products/check/:code
 async function returnProductData(code, res) {
+  console.log('📤 [returnProductData] НАЧАЛО, code =', code);
+  
   const product = await db.execute({
     sql: 'SELECT * FROM products_info WHERE code = ?',
     args: [code]
   });
   
   if (product.rows.length === 0) {
+    console.log('❌ [returnProductData] Товар не найден в БД');
     return res.status(404).json({ error: 'Товар не найден' });
   }
+  
+  console.log('✅ [returnProductData] Товар найден:', product.rows[0].name);
   
   const history = await db.execute({
     sql: 'SELECT price, updated_at FROM price_history WHERE product_code = ? ORDER BY updated_at ASC',
     args: [code]
   });
+  
+  console.log('📊 [returnProductData] history.length =', history.rows.length);
   
   res.json({
     exists: true,
@@ -734,6 +791,8 @@ async function returnProductData(code, res) {
       }))
     }
   });
+  
+  console.log('✅ [returnProductData] Ответ отправлен');
 }
 // ПОЛУЧЕНИЕ ТОВАРОВ С ФИЛЬТРОМ ПО ДАТЕ (14ДН ПО)
 export async function getProductsWithDateFilter(req, res, next) {
