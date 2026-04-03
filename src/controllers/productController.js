@@ -710,7 +710,7 @@ async function returnProductData(code, res) {
   }
   
   const history = await db.execute({
-    sql: 'SELECT price, updated_at, no_overpayment_max_months FROM price_history WHERE product_code = ? ORDER BY updated_at ASC',
+    sql: 'SELECT price, updated_at FROM price_history WHERE product_code = ? ORDER BY updated_at ASC',
     args: [code]
   });
   
@@ -730,8 +730,7 @@ async function returnProductData(code, res) {
       lastUpdate: product.rows[0].last_update,
       priceHistory: history.rows.map(row => ({
         date: row.updated_at,
-        price: row.price,
-        no_overpayment_max_months: row.no_overpayment_max_months
+        price: row.price
       }))
     }
   });
