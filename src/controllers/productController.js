@@ -520,7 +520,6 @@ export async function addFullProduct(req, res, next) {
     next(err);
   }
 }
-
 export async function fetchAndAddProduct(req, res, next) {
   try {
     const { code } = req.body;
@@ -537,7 +536,7 @@ export async function fetchAndAddProduct(req, res, next) {
     
     if (existingProduct.rows.length > 0) {
       // Товар уже есть — возвращаем как /api/products/check/:code
-      return redirectToCheck(code, res);
+      return await returnProductData(code, res);
     }
     
     // 2. Получаем данные с 21vek
@@ -549,19 +548,19 @@ export async function fetchAndAddProduct(req, res, next) {
     // 3. Добавляем товар в БД
     await addProductToDatabase(productData);
     
-    // 4. Возвращаем данные как /api/products/check/:code
+    // 4. Возвращаем данные
     await returnProductData(code, res);
     
   } catch (err) {
+    console.error('❌ Ошибка fetch-and-add:', err);
     Logger.error('Ошибка fetch-and-add', err);
-    next(err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 }
 
 // Вспомогательная функция: получить данные с 21vek
 async function fetchFrom21vek(code) {
   try {
-    // Запрос к product-card-mini
     const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
       method: "POST",
       headers: { "accept": "application/json", "content-type": "application/json" },
@@ -573,20 +572,25 @@ async function fetchFrom21vek(code) {
     const product = data.data?.productCards?.[0];
     if (!product) return null;
     
-    // Запрос к partly-pay
     const price = parseFloat(product.packPrice || product.price);
-    const partlyResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
-      method: "POST",
-      headers: { "accept": "application/json", "content-type": "application/json" },
-      body: JSON.stringify({ data: { products: [{ code: parseInt(code), price }] } })
-    });
     
-    if (partlyResponse.ok) {
-      const partlyData = await partlyResponse.json();
-      if (partlyData.data?.[0]) {
-        product.monthly_payment = partlyData.data[0].monthly_payment;
-        product.no_overpayment_max_months = partlyData.data[0].no_overpayment_max_months;
+    // Запрос к partly-pay
+    try {
+      const partlyResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
+        method: "POST",
+        headers: { "accept": "application/json", "content-type": "application/json" },
+        body: JSON.stringify({ data: { products: [{ code: parseInt(code), price }] } })
+      });
+      
+      if (partlyResponse.ok) {
+        const partlyData = await partlyResponse.json();
+        if (partlyData.data?.[0]) {
+          product.monthly_payment = partlyData.data[0].monthly_payment;
+          product.no_overpayment_max_months = partlyData.data[0].no_overpayment_max_months;
+        }
       }
+    } catch (err) {
+      console.error('Ошибка получения рассрочки:', err);
     }
     
     return product;
@@ -606,6 +610,8 @@ async function addProductToDatabase(product) {
   const brand = product.producerName || 'Без бренда';
   const now = new Date();
   const nameLower = product.name.toLowerCase();
+  const monthly_payment = product.monthly_payment || null;
+  const no_overpayment_max_months = product.no_overpayment_max_months || null;
   
   // Добавляем в product_codes
   await db.execute({
@@ -636,7 +642,7 @@ async function addProductToDatabase(product) {
     `,
     args: [
       code, product.name, realPrice, basePrice, packPrice,
-      product.monthly_payment, product.no_overpayment_max_months,
+      monthly_payment, no_overpayment_max_months,
       product.link || '', category, brand,
       now.toISOString().slice(0, 19).replace('T', ' '),
       nameLower
@@ -647,7 +653,7 @@ async function addProductToDatabase(product) {
   await db.execute({
     sql: `INSERT INTO price_history (product_code, product_name, price, updated_at, no_overpayment_max_months)
           VALUES (?, ?, ?, ?, ?)`,
-    args: [code, product.name, realPrice, now.toISOString().slice(0, 19).replace('T', ' '), product.no_overpayment_max_months]
+    args: [code, product.name, realPrice, now.toISOString().slice(0, 19).replace('T', ' '), no_overpayment_max_months]
   });
 }
 
@@ -689,7 +695,6 @@ async function returnProductData(code, res) {
     }
   });
 }
-
 // ПОЛУЧЕНИЕ ТОВАРОВ С ФИЛЬТРОМ ПО ДАТЕ (14ДН ПО)
 export async function getProductsWithDateFilter(req, res, next) {
   try {
