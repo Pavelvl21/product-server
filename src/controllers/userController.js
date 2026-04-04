@@ -236,141 +236,18 @@ export async function getShelfPaginated(req, res, next) {
     const sort = req.query.sort || 'default';
     const { from, to, code } = req.query;
     
-    let startDate, endDate;
-    if (from && to) {
-      startDate = from;
-      endDate = to;
-    } else {
-      endDate = new Date().toISOString().split('T')[0];
-      startDate = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    }
-    
-    const builder = new SafeQueryBuilder();
-    
-    builder.addCondition('us.user_id = ?', userId);
-    builder.addInCondition('p.category', categories);
-    builder.addInCondition('p.brand', brands);
-    
-    if (code) {
-      builder.addCondition('p.code = ?', code);
-    }
-    
-    if (search && search.trim() !== '') {
-      const searchLower = search.toLowerCase().trim();
-      builder.addCondition(`(p.name_lower LIKE ? OR p.code LIKE ?)`, `%${searchLower}%`, `%${search}%`);
-    }
-    
-    const { whereClause, params } = builder.buildWhere();
-    
-    let orderClause = '';
-    if (sort === 'price_asc') {
-      orderClause = 'ORDER BY CAST(p.last_price AS REAL) ASC, p.code';
-    } else if (sort === 'price_desc') {
-      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code';
-    } else if (sort === 'name_asc') {
-      orderClause = 'ORDER BY p.name_lower ASC, p.code';
-    } else if (sort === 'name_desc') {
-      orderClause = 'ORDER BY p.name_lower DESC, p.code';
-    } else {
-      orderClause = 'ORDER BY us.added_at DESC, p.code';
-    }
-    
-    const products = await db.execute({
-      sql: `
-        SELECT 
-          p.code,
-          p.name,
-          p.last_price,
-          p.base_price,
-          p.packPrice,
-          p.monthly_payment,
-          p.no_overpayment_max_months,
-          p.category,
-          p.brand,
-          p.link,
-          p.last_update,
-          us.added_at as shelf_added_at,
-          1 as inMonitoring
-        FROM products_info p
-        INNER JOIN user_shelf us ON p.code = us.product_code
-        ${whereClause}
-        ${orderClause}
-        LIMIT ? OFFSET ?
-      `,
-      args: [...params, limit, offset]
-    });
-    
-    const countResult = await db.execute({
-      sql: `
-        SELECT COUNT(*) as count 
-        FROM products_info p
-        INNER JOIN user_shelf us ON p.code = us.product_code
-        ${whereClause}
-      `,
-      args: params
-    });
-    
-    const totalProductsCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
+    // ... остальной код
     
     if (products.rows.length > 0) {
-      const codes = products.rows.map(p => p.code);
-      const placeholders = codes.map(() => '?').join(',');
-      
-      const history = await db.execute({
-        sql: `
-          SELECT product_code, price, updated_at
-          FROM price_history
-          WHERE product_code IN (${placeholders})
-            AND DATE(updated_at) BETWEEN ? AND ?
-          ORDER BY product_code, updated_at ASC
-        `,
-        args: [...codes, startDate, endDate]
-      });
-      
-      const historyByProduct = {};
-      history.rows.forEach(row => {
-        if (!historyByProduct[row.product_code]) {
-          historyByProduct[row.product_code] = [];
-        }
-        historyByProduct[row.product_code].push({
-          date: row.updated_at,
-          price: row.price
-        });
-      });
-      
-      const datesResult = await db.execute({
-        sql: `
-          SELECT DISTINCT DATE(updated_at) as d
-          FROM price_history
-          WHERE DATE(updated_at) BETWEEN ? AND ?
-          ORDER BY d ASC
-        `,
-        args: [startDate, endDate]
-      });
-      const allDates = datesResult.rows.map(row => row.d);
-      
+      // ... здесь формируется ответ
       products.rows = products.rows.map(p => {
-        const productHistory = historyByProduct[p.code] || [];
-        const prices = {};
-        
-        allDates.forEach(date => {
-          const dayRecords = productHistory.filter(h => h.date.startsWith(date));
-          if (dayRecords.length > 0) {
-            const last = dayRecords.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
-            prices[date] = last.price;
-          } else {
-            const prev = productHistory.filter(h => h.date < date)
-              .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
-            if (prev) prices[date] = prev.price;
-          }
-        });
-        
+        // ...
         return {
           ...p,
           priceHistory: productHistory,
           prices: prices,
           currentPrice: p.last_price ? parseFloat(p.last_price) : null,
-          exists: true
+          exists: true  // ← ДОБАВЬТЕ ЭТУ СТРОКУ, если её нет
         };
       });
     }
