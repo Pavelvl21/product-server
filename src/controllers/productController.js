@@ -216,7 +216,6 @@ export async function getPaginatedProducts(req, res, next) {
       args: params
     });
     
-    // ✅ Общее количество товаров в системе
     const totalProductsCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
     
     if (products.rows.length > 0) {
@@ -245,10 +244,20 @@ export async function getPaginatedProducts(req, res, next) {
       });
       
       products.rows = products.rows.map(p => ({
-        ...p,
-        exists: true,
+        code: p.code,
+        name: p.name,
+        link: p.link,
+        category: p.category || 'Товары',
+        brand: p.brand || 'Без бренда',
+        base_price: p.base_price,
+        packPrice: p.packPrice,
+        monthly_payment: p.monthly_payment,
+        no_overpayment_max_months: p.no_overpayment_max_months,
+        currentPrice: p.last_price ? parseFloat(p.last_price) : null,
+        lastUpdate: p.last_update,
         priceHistory: historyByProduct[p.code] || [],
-        currentPrice: p.last_price ? parseFloat(p.last_price) : null
+        inMonitoring: p.inMonitoring === 1,
+        exists: true
       }));
     }
     
@@ -813,7 +822,6 @@ export async function getProductsWithDateFilter(req, res, next) {
       not_monitoring
     } = req.query;
     
-    // Определяем диапазон дат
     let startDate, endDate;
     if (from && to) {
       startDate = from;
@@ -823,7 +831,6 @@ export async function getProductsWithDateFilter(req, res, next) {
       startDate = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     }
     
-    // Получаем все даты в диапазоне
     const datesResult = await db.execute({
       sql: `
         SELECT DISTINCT DATE(updated_at) as d
@@ -835,7 +842,6 @@ export async function getProductsWithDateFilter(req, res, next) {
     });
     const allDates = datesResult.rows.map(row => row.d);
     
-    // Если указан конкретный товар — возвращаем только его
     if (code) {
       const product = await db.execute({
         sql: 'SELECT * FROM products_info WHERE code = ?',
@@ -875,6 +881,11 @@ export async function getProductsWithDateFilter(req, res, next) {
         }
       });
       
+      const inMonitoring = await db.execute({
+        sql: 'SELECT id FROM user_shelf WHERE user_id = ? AND product_code = ?',
+        args: [userId, code]
+      });
+      
       return res.json({
         code: product.rows[0].code,
         name: product.rows[0].name,
@@ -891,77 +902,38 @@ export async function getProductsWithDateFilter(req, res, next) {
         priceHistory: priceHistory,
         dates: allDates,
         from: startDate,
-        to: endDate
+        to: endDate,
+        exists: true,
+        inMonitoring: inMonitoring.rows.length > 0
       });
     }
     
-    // === ОСНОВНОЙ ЗАПРОС (все товары с фильтрами) ===
+    const builder = new SafeQueryBuilder();
     
-    // Строим WHERE условия
-    const conditions = [];
-    const queryParams = [];
+    builder.addInCondition('p.category', categories);
+    builder.addInCondition('p.brand', brands);
     
-    // Фильтр по категориям
-    if (categories) {
-      const cats = Array.isArray(categories) ? categories : [categories];
-      if (cats.length > 0) {
-        const placeholders = cats.map(() => '?').join(',');
-        conditions.push(`p.category IN (${placeholders})`);
-        queryParams.push(...cats);
-      }
-    }
-    
-    // Фильтр по брендам
-    if (brands) {
-      const brs = Array.isArray(brands) ? brands : [brands];
-      if (brs.length > 0) {
-        const placeholders = brs.map(() => '?').join(',');
-        conditions.push(`p.brand IN (${placeholders})`);
-        queryParams.push(...brs);
-      }
-    }
-    
-    // Фильтр "не в избранном"
     if (not_monitoring === 'true') {
-      conditions.push(`p.code NOT IN (SELECT product_code FROM user_shelf WHERE user_id = ?)`);
-      queryParams.push(userId);
+      builder.addCondition(`p.code NOT IN (SELECT product_code FROM user_shelf WHERE user_id = ?)`, userId);
     }
     
-    // Поиск по названию или коду
     if (search && search.trim() !== '') {
       const searchLower = search.toLowerCase().trim();
-      conditions.push(`(p.name_lower LIKE ? OR p.code LIKE ?)`);
-      queryParams.push(`%${searchLower}%`, `%${search}%`);
+      builder.addCondition(`(p.name_lower LIKE ? OR p.code LIKE ?)`, `%${searchLower}%`, `%${search}%`);
     }
     
-    const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    const { whereClause, params } = builder.buildWhere();
+    const orderClause = getOrderByClause(sort);
     
-    // Определяем сортировку
-    let orderClause = '';
-    if (sort === 'price_asc') {
-      orderClause = 'ORDER BY CAST(p.last_price AS REAL) ASC, p.code';
-    } else if (sort === 'price_desc') {
-      orderClause = 'ORDER BY CAST(p.last_price AS REAL) DESC, p.code';
-    } else if (sort === 'name_asc') {
-      orderClause = 'ORDER BY p.name_lower ASC, p.code';
-    } else if (sort === 'name_desc') {
-      orderClause = 'ORDER BY p.name_lower DESC, p.code';
-    } else {
-      orderClause = 'ORDER BY p.last_update DESC, p.code';
-    }
-    
-    // Получаем общее количество товаров ПОСЛЕ ФИЛЬТРОВ
     const countResult = await db.execute({
       sql: `SELECT COUNT(*) as count FROM products_info p ${whereClause}`,
-      args: queryParams
+      args: params
     });
     const totalFiltered = countResult.rows[0].count;
     
-    // Общее количество товаров в системе
     const totalProductsResult = await db.execute('SELECT COUNT(*) as count FROM products_info');
     const totalAllProducts = totalProductsResult.rows[0].count;
     
-    // Получаем товары с пагинацией
     const products = await db.execute({
       sql: `
         SELECT 
@@ -973,10 +945,9 @@ export async function getProductsWithDateFilter(req, res, next) {
         ${orderClause}
         LIMIT ? OFFSET ?
       `,
-      args: [userId, ...queryParams, parseInt(limit), parseInt(offset)]
+      args: [userId, ...params, parseInt(limit), parseInt(offset)]
     });
     
-    // Получаем историю цен для этих товаров
     if (products.rows.length > 0) {
       const codes = products.rows.map(p => p.code);
       const placeholders = codes.map(() => '?').join(',');
@@ -1033,7 +1004,8 @@ export async function getProductsWithDateFilter(req, res, next) {
           lastUpdate: p.last_update,
           prices: prices,
           priceHistory: productHistory,
-          inMonitoring: p.inMonitoring === 1
+          inMonitoring: p.inMonitoring === 1,
+          exists: true
         };
       });
     }
@@ -1049,7 +1021,6 @@ export async function getProductsWithDateFilter(req, res, next) {
     });
     
   } catch (err) {
-    console.error('❌ Ошибка в getProductsWithDateFilter:', err);
     Logger.error('Ошибка получения истории цен', err);
     next(err);
   }
