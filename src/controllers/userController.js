@@ -234,11 +234,8 @@ export async function getShelfPaginated(req, res, next) {
       (Array.isArray(req.query.brands) ? req.query.brands : [req.query.brands]) : [];
     const search = req.query.search;
     const sort = req.query.sort || 'default';
-    
-    // Параметры дат (как в /products/history)
     const { from, to, code } = req.query;
     
-    // Определяем диапазон дат для истории
     let startDate, endDate;
     if (from && to) {
       startDate = from;
@@ -254,7 +251,6 @@ export async function getShelfPaginated(req, res, next) {
     builder.addInCondition('p.category', categories);
     builder.addInCondition('p.brand', brands);
     
-    // Если указан код товара, фильтруем по нему
     if (code) {
       builder.addCondition('p.code = ?', code);
     }
@@ -279,7 +275,6 @@ export async function getShelfPaginated(req, res, next) {
       orderClause = 'ORDER BY us.added_at DESC, p.code';
     }
     
-    // Получаем товары с пагинацией
     const products = await db.execute({
       sql: `
         SELECT 
@@ -315,10 +310,8 @@ export async function getShelfPaginated(req, res, next) {
       args: params
     });
     
-    // Общее количество товаров в системе (для Header)
     const totalProductsCount = await db.execute('SELECT COUNT(*) as count FROM products_info');
     
-    // Получаем историю цен за указанный период для каждого товара
     if (products.rows.length > 0) {
       const codes = products.rows.map(p => p.code);
       const placeholders = codes.map(() => '?').join(',');
@@ -345,7 +338,6 @@ export async function getShelfPaginated(req, res, next) {
         });
       });
       
-      // Получаем все даты в диапазоне
       const datesResult = await db.execute({
         sql: `
           SELECT DISTINCT DATE(updated_at) as d
@@ -377,7 +369,8 @@ export async function getShelfPaginated(req, res, next) {
           ...p,
           priceHistory: productHistory,
           prices: prices,
-          currentPrice: p.last_price ? parseFloat(p.last_price) : null
+          currentPrice: p.last_price ? parseFloat(p.last_price) : null,
+          exists: true
         };
       });
     }
@@ -396,7 +389,6 @@ export async function getShelfPaginated(req, res, next) {
     next(err);
   }
 }
-
 export async function addToShelf(req, res, next) {
   try {
     const userId = req.user.id;
