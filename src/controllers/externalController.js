@@ -1,6 +1,64 @@
 import db from '../../database.js';
 import Logger from '../services/logger.js';
 
+// Вспомогательная функция для получения полных данных товара с 21vek
+async function fetchFullProductInfo(code) {
+  try {
+    const response = await fetch("https://gate.21vek.by/product-card-mini/v1/fetch", {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        ids: [parseInt(code)],
+        isAdult: false,
+        limit: 100
+      })
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const product = data.data?.productCards?.[0];
+    if (!product) return null;
+
+    // Получаем рассрочку
+    try {
+      const partlyPayResponse = await fetch("https://gate.21vek.by/partly-pay/v2/products.calculate", {
+        method: "POST",
+        headers: {
+          "accept": "application/json",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ 
+          data: { 
+            products: [{
+              code: parseInt(code),
+              price: parseFloat(product.packPrice || product.price)
+            }]
+          } 
+        })
+      });
+
+      if (partlyPayResponse.ok) {
+        const partlyPayResult = await partlyPayResponse.json();
+        if (partlyPayResult.data && partlyPayResult.data[0]) {
+          product.monthly_payment = partlyPayResult.data[0].monthly_payment;
+          product.no_overpayment_max_months = partlyPayResult.data[0].no_overpayment_max_months;
+        }
+      }
+    } catch (error) {
+      console.log('⚠️ Ошибка получения рассрочки:', error.message);
+    }
+
+    return product;
+  } catch (err) {
+    console.error(`❌ Ошибка fetchFullProductInfo для ${code}:`, err);
+    return null;
+  }
+}
+
 export async function unifiedSearch(req, res, next) {
   try {
     const { query } = req.query;
@@ -26,24 +84,24 @@ export async function unifiedSearch(req, res, next) {
       args: [`%${searchTerm}%`, `%${searchTerm}%`]
     });
     
-    const localCodesSet = new Set(localProducts.rows.map(p => p.code));
-    
-    // Форматируем локальные товары
-    const formattedLocal = localProducts.rows.map(p => ({
-      code: p.code,
-      name: p.name,
-      link: p.link,
-      category: p.category || 'Товары',
-      brand: p.brand || 'Без бренда',
-      base_price: p.base_price,
-      packPrice: p.packPrice,
-      monthly_payment: p.monthly_payment,
-      no_overpayment_max_months: p.no_overpayment_max_months,
-      currentPrice: p.price,
-      lastUpdate: p.last_update,
-      exists: true,
-      source: 'local'
-    }));
+    // Создаём Map для быстрого доступа к локальным товарам по коду
+    const localProductsMap = new Map();
+    for (const p of localProducts.rows) {
+      localProductsMap.set(p.code, {
+        code: p.code,
+        name: p.name,
+        link: p.link,
+        category: p.category || 'Товары',
+        brand: p.brand || 'Без бренда',
+        base_price: p.base_price,
+        packPrice: p.packPrice,
+        monthly_payment: p.monthly_payment,
+        no_overpayment_max_months: p.no_overpayment_max_months,
+        currentPrice: p.price,
+        lastUpdate: p.last_update,
+        exists: true
+      });
+    }
     
     // ========== 2. ВНЕШНИЙ ПОИСК НА 21VEK ==========
     const externalResponse = await fetch(
@@ -58,11 +116,12 @@ export async function unifiedSearch(req, res, next) {
     );
     
     if (!externalResponse.ok) {
+      // Если внешний поиск не удался, возвращаем только локальные результаты
+      const products = Array.from(localProductsMap.values());
       return res.json({
         query,
-        localCount: formattedLocal.length,
-        externalCount: 0,
-        products: formattedLocal
+        total: products.length,
+        products: products
       });
     }
     
@@ -70,10 +129,10 @@ export async function unifiedSearch(req, res, next) {
     const productsGroup = externalData.data?.find(group => group.group_type === 'products');
     const externalItems = productsGroup?.items || [];
     
-    // Собираем коды внешних товаров для массовой проверки наличия в БД
+    // Собираем коды внешних товаров
     const externalCodes = externalItems
       .map(item => item.product_id?.replace(/\./g, '') || '')
-      .filter(code => code && !localCodesSet.has(code));
+      .filter(code => code && !localProductsMap.has(code));
     
     // Массовая проверка существования в БД
     const existingCodesSet = new Set();
@@ -88,7 +147,7 @@ export async function unifiedSearch(req, res, next) {
     
     // Получаем полные данные из БД для товаров, которые уже есть (и не попали в локальный поиск)
     const existingInDbCodes = [...existingCodesSet];
-    let existingProductsData = [];
+    const existingProductsMap = new Map();
     if (existingInDbCodes.length) {
       const placeholders = existingInDbCodes.map(() => '?').join(',');
       const existingFull = await db.execute({
@@ -102,61 +161,88 @@ export async function unifiedSearch(req, res, next) {
         `,
         args: existingInDbCodes
       });
-      existingProductsData = existingFull.rows.map(p => ({
-        code: p.code,
-        name: p.name,
-        link: p.link,
-        category: p.category || 'Товары',
-        brand: p.brand || 'Без бренда',
-        base_price: p.base_price,
-        packPrice: p.packPrice,
-        monthly_payment: p.monthly_payment,
-        no_overpayment_max_months: p.no_overpayment_max_months,
-        currentPrice: p.price,
-        lastUpdate: p.last_update,
-        exists: true,
-        source: 'existing'  // товар уже в БД, но не подошел под локальный поиск
-      }));
-    }
-    
-    // Форматируем внешние товары, которых НЕТ в БД
-    const formattedExternal = [];
-    for (const item of externalItems) {
-      const cleanCode = item.product_id?.replace(/\./g, '') || '';
-      if (!cleanCode) continue;
-      if (localCodesSet.has(cleanCode)) continue;
-      if (existingCodesSet.has(cleanCode)) continue; // уже обработали как existing
-      
-      let price = null;
-      if (item.price && item.price !== 'нет на складе') {
-        const priceStr = item.price.replace(/\s/g, '').replace(',', '.');
-        price = parseFloat(priceStr);
+      for (const p of existingFull.rows) {
+        existingProductsMap.set(p.code, {
+          code: p.code,
+          name: p.name,
+          link: p.link,
+          category: p.category || 'Товары',
+          brand: p.brand || 'Без бренда',
+          base_price: p.base_price,
+          packPrice: p.packPrice,
+          monthly_payment: p.monthly_payment,
+          no_overpayment_max_months: p.no_overpayment_max_months,
+          currentPrice: p.price,
+          lastUpdate: p.last_update,
+          exists: true
+        });
       }
-      
-      formattedExternal.push({
-        code: cleanCode,
-        originalCode: item.product_id,
-        name: item.name || 'Без названия',
-        price: price || 0,
-        currentPrice: price || 0,
-        url: item.url || null,
-        image: item.image || null,
-        exists: false,
-        source: 'external',
-        fromExternal: true
-      });
     }
     
-    // ========== 3. ОБЪЕДИНЯЕМ РЕЗУЛЬТАТЫ ==========
-    const allProducts = [...formattedLocal, ...existingProductsData, ...formattedExternal];
+    // Определяем коды товаров, которых нет в БД (нужно получить полную информацию)
+    const notInDbCodes = externalCodes.filter(code => !existingCodesSet.has(code));
+    
+    // Получаем полную информацию для товаров, которых нет в БД
+    const externalFullProducts = [];
+    for (const code of notInDbCodes) {
+      const fullInfo = await fetchFullProductInfo(code);
+      if (fullInfo) {
+        externalFullProducts.push({
+          code: code,
+          name: fullInfo.name,
+          link: fullInfo.link || null,
+          category: fullInfo.categories?.length ? fullInfo.categories[fullInfo.categories.length - 1].name : 'Товары',
+          brand: fullInfo.producerName || 'Без бренда',
+          base_price: fullInfo.price ? parseFloat(fullInfo.price) : null,
+          packPrice: fullInfo.packPrice ? parseFloat(fullInfo.packPrice) : null,
+          monthly_payment: fullInfo.monthly_payment || null,
+          no_overpayment_max_months: fullInfo.no_overpayment_max_months || null,
+          currentPrice: parseFloat(fullInfo.packPrice || fullInfo.price),
+          image: fullInfo.image || null,
+          exists: false
+        });
+      } else {
+        // Если не удалось получить полную информацию, используем данные из поиска
+        const searchItem = externalItems.find(item => item.product_id?.replace(/\./g, '') === code);
+        let price = null;
+        if (searchItem?.price && searchItem.price !== 'нет на складе') {
+          const priceStr = searchItem.price.replace(/\s/g, '').replace(',', '.');
+          price = parseFloat(priceStr);
+        }
+        externalFullProducts.push({
+          code: code,
+          name: searchItem?.name || 'Без названия',
+          price: price || 0,
+          currentPrice: price || 0,
+          url: searchItem?.url || null,
+          image: searchItem?.image || null,
+          exists: false
+        });
+      }
+    }
+    
+    // Формируем итоговый список товаров
+    const products = [];
+    
+    // Добавляем локальные товары
+    for (const product of localProductsMap.values()) {
+      products.push(product);
+    }
+    
+    // Добавляем товары, которые есть в БД (не попавшие в локальный поиск)
+    for (const product of existingProductsMap.values()) {
+      products.push(product);
+    }
+    
+    // Добавляем внешние товары с полной информацией
+    for (const product of externalFullProducts) {
+      products.push(product);
+    }
     
     res.json({
       query,
-      localCount: formattedLocal.length,
-      existingCount: existingProductsData.length,
-      externalCount: formattedExternal.length,
-      total: allProducts.length,
-      products: allProducts
+      total: products.length,
+      products: products
     });
     
   } catch (err) {
