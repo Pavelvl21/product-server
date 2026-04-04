@@ -210,6 +210,7 @@ export async function getShelf(req, res, next) {
       
       products.rows = products.rows.map(p => ({
         ...p,
+        exists: true,
         priceHistory: historyByProduct[p.code] || []
       }));
     }
