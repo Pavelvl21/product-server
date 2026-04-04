@@ -56,8 +56,8 @@ router.post('/api/user/change-password', authenticateToken, validate(schemas.cha
 router.get('/api/filter-stats', authenticateToken, userController.getFilterStats);
 router.get('/api/filter-options', authenticateToken, userController.getFilterOptions);
 
-// ==================== ВНЕШНИЙ ПОИСК ====================
-router.get('/api/external/search', authenticateToken, externalController.searchExternal);
+// ==================== ПОИСК (внутренний+внешний) ====================
+router.get('/api/search', authenticateToken, externalController.unifiedSearch);
 
 // ==================== АДМИНСКИЕ МАРШРУТЫ ====================
 router.get('/api/allowed-emails', authenticateBot, adminController.getAllowedEmails);
