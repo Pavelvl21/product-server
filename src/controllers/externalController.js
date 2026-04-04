@@ -26,10 +26,9 @@ export async function unifiedSearch(req, res, next) {
       args: [`%${searchTerm}%`, `%${searchTerm}%`]
     });
     
-    // Кэш кодов локальных товаров для быстрой проверки
     const localCodesSet = new Set(localProducts.rows.map(p => p.code));
     
-    // Форматируем локальные товары (как в /api/products/check)
+    // Форматируем локальные товары
     const formattedLocal = localProducts.rows.map(p => ({
       code: p.code,
       name: p.name,
@@ -42,9 +41,8 @@ export async function unifiedSearch(req, res, next) {
       no_overpayment_max_months: p.no_overpayment_max_months,
       currentPrice: p.price,
       lastUpdate: p.last_update,
-      exists: true,          // есть в БД
-      source: 'local',
-      // priceHistory можно не включать для краткости, но при необходимости можно добавить
+      exists: true,
+      source: 'local'
     }));
     
     // ========== 2. ВНЕШНИЙ ПОИСК НА 21VEK ==========
@@ -60,7 +58,6 @@ export async function unifiedSearch(req, res, next) {
     );
     
     if (!externalResponse.ok) {
-      // Если внешний поиск не удался, возвращаем только локальные результаты
       return res.json({
         query,
         localCount: formattedLocal.length,
@@ -73,30 +70,68 @@ export async function unifiedSearch(req, res, next) {
     const productsGroup = externalData.data?.find(group => group.group_type === 'products');
     const externalItems = productsGroup?.items || [];
     
-    // Форматируем внешние товары и проверяем наличие в БД
+    // Собираем коды внешних товаров для массовой проверки наличия в БД
+    const externalCodes = externalItems
+      .map(item => item.product_id?.replace(/\./g, '') || '')
+      .filter(code => code && !localCodesSet.has(code));
+    
+    // Массовая проверка существования в БД
+    const existingCodesSet = new Set();
+    if (externalCodes.length) {
+      const placeholders = externalCodes.map(() => '?').join(',');
+      const existingResult = await db.execute({
+        sql: `SELECT code FROM products_info WHERE code IN (${placeholders})`,
+        args: externalCodes
+      });
+      existingResult.rows.forEach(row => existingCodesSet.add(row.code));
+    }
+    
+    // Получаем полные данные из БД для товаров, которые уже есть (и не попали в локальный поиск)
+    const existingInDbCodes = [...existingCodesSet];
+    let existingProductsData = [];
+    if (existingInDbCodes.length) {
+      const placeholders = existingInDbCodes.map(() => '?').join(',');
+      const existingFull = await db.execute({
+        sql: `
+          SELECT 
+            code, name, link, category, brand, 
+            last_price as price, base_price, packPrice,
+            monthly_payment, no_overpayment_max_months, last_update
+          FROM products_info
+          WHERE code IN (${placeholders})
+        `,
+        args: existingInDbCodes
+      });
+      existingProductsData = existingFull.rows.map(p => ({
+        code: p.code,
+        name: p.name,
+        link: p.link,
+        category: p.category || 'Товары',
+        brand: p.brand || 'Без бренда',
+        base_price: p.base_price,
+        packPrice: p.packPrice,
+        monthly_payment: p.monthly_payment,
+        no_overpayment_max_months: p.no_overpayment_max_months,
+        currentPrice: p.price,
+        lastUpdate: p.last_update,
+        exists: true,
+        source: 'existing'  // товар уже в БД, но не подошел под локальный поиск
+      }));
+    }
+    
+    // Форматируем внешние товары, которых НЕТ в БД
     const formattedExternal = [];
     for (const item of externalItems) {
       const cleanCode = item.product_id?.replace(/\./g, '') || '';
       if (!cleanCode) continue;
-      
-      // Если товар уже есть в локальных результатах — пропускаем (уже есть)
       if (localCodesSet.has(cleanCode)) continue;
+      if (existingCodesSet.has(cleanCode)) continue; // уже обработали как existing
       
-      // Парсим цену
       let price = null;
       if (item.price && item.price !== 'нет на складе') {
         const priceStr = item.price.replace(/\s/g, '').replace(',', '.');
         price = parseFloat(priceStr);
       }
-      
-      // Проверяем, есть ли товар в БД (по коду), но не попал в локальный поиск?
-      // Например, если название не совпало, но код есть. Проверим отдельно.
-      const existsInDb = await db.execute({
-        sql: 'SELECT code FROM products_info WHERE code = ?',
-        args: [cleanCode]
-      });
-      
-      const exists = existsInDb.rows.length > 0;
       
       formattedExternal.push({
         code: cleanCode,
@@ -106,18 +141,19 @@ export async function unifiedSearch(req, res, next) {
         currentPrice: price || 0,
         url: item.url || null,
         image: item.image || null,
-        exists: exists,
+        exists: false,
         source: 'external',
         fromExternal: true
       });
     }
     
     // ========== 3. ОБЪЕДИНЯЕМ РЕЗУЛЬТАТЫ ==========
-    const allProducts = [...formattedLocal, ...formattedExternal];
+    const allProducts = [...formattedLocal, ...existingProductsData, ...formattedExternal];
     
     res.json({
       query,
       localCount: formattedLocal.length,
+      existingCount: existingProductsData.length,
       externalCount: formattedExternal.length,
       total: allProducts.length,
       products: allProducts
