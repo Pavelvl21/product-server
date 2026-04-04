@@ -152,6 +152,7 @@ export async function getCatalogProducts(req, res, next) {
       
       products.rows = products.rows.map(p => ({
         ...p,
+        exists: true,
         priceHistory: historyByProduct[p.code] || [],
         currentPrice: p.last_price ? parseFloat(p.last_price) : null
       }));
